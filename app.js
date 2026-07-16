@@ -956,8 +956,9 @@ function mmActiveScale(pan, cw, ch) {
 }
 
 function mmApplyZoom(pan, scaler, canvas, lbl) {
-  if (!mapLayout) return;
+  if (!mapLayout || !pan) return;
   const { width: cw, height: ch } = mapLayout;
+  if (!cw || !ch) return;
   const scale = mmActiveScale(pan, cw, ch);
   canvas.style.width = cw + "px";
   canvas.style.height = ch + "px";
@@ -965,6 +966,15 @@ function mmApplyZoom(pan, scaler, canvas, lbl) {
   scaler.style.width = Math.ceil(cw * scale) + "px";
   scaler.style.height = Math.ceil(ch * scale) + "px";
   if (lbl) lbl.textContent = mapZoomAuto ? "Fit" : Math.round(scale * 100) + "%";
+}
+
+function mmScheduleZoom(pan, scaler, canvas, lbl, tries = 0) {
+  if (!pan || !mapLayout) return;
+  if (pan.clientWidth < 2 || pan.clientHeight < 2) {
+    if (tries < 16) requestAnimationFrame(() => mmScheduleZoom(pan, scaler, canvas, lbl, tries + 1));
+    return;
+  }
+  mmApplyZoom(pan, scaler, canvas, lbl);
 }
 
 function mmZoomHistory() {
@@ -1048,10 +1058,10 @@ function mmWireZoom(pan, scaler, canvas, lbl) {
 
   if (pan._mmResizeObs) pan._mmResizeObs.disconnect();
   pan._mmResizeObs = new ResizeObserver(() => {
-    if (mapZoomAuto) mmApplyZoom(pan, scaler, canvas, lbl);
+    if (mapZoomAuto) mmScheduleZoom(pan, scaler, canvas, lbl);
   });
   pan._mmResizeObs.observe(pan);
-  requestAnimationFrame(() => mmApplyZoom(pan, scaler, canvas, lbl));
+  mmScheduleZoom(pan, scaler, canvas, lbl);
 }
 
 function finishMapRename(page, title) {
@@ -1187,7 +1197,17 @@ function renderMap(main) {
     return;
   }
 
-  const { nodes, edges, width, height } = computeMindmapLayout(roots);
+  let layout;
+  try {
+    layout = computeMindmapLayout(roots);
+  } catch (err) {
+    console.error("Mindmap layout failed", err);
+    const e = el("div", "mmap-empty");
+    e.append(el("p", null, "Could not draw the map. Try refreshing the page."));
+    main.append(e);
+    return;
+  }
+  const { nodes, edges, width, height } = layout;
   mapLayout = { width, height };
 
   const viewport = el("div", "mindmap-viewport");
@@ -1257,7 +1277,7 @@ function render() {
   if (view === "map") {
     requestAnimationFrame(() => {
       const pan = $("#mmPan"), scaler = $("#mmScaler"), canvas = $("#mmCanvas"), lbl = $("#mmZoomLbl");
-      if (pan && mapLayout) mmApplyZoom(pan, scaler, canvas, lbl);
+      if (pan && mapLayout) mmScheduleZoom(pan, scaler, canvas, lbl);
     });
   }
   updateUndoButtons();

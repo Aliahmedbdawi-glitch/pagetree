@@ -90,6 +90,8 @@ input, textarea { font: inherit; color: inherit; }
 
 /* ---------- main ---------- */
 #main {
+  grid-row: 2;
+  min-height: 0;
   overflow-y: auto;
   padding: 28px max(clamp(16px, 5vw, 64px), env(safe-area-inset-right, 0px)) max(120px, calc(48px + env(safe-area-inset-bottom, 0px))) max(clamp(16px, 5vw, 64px), env(safe-area-inset-left, 0px));
 }
@@ -310,6 +312,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
   padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
 }
 .mmap-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; margin-bottom: 8px; flex: none; }
@@ -321,7 +324,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 .mmap-zoombtn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .mmap-zoomfit { width: auto; padding: 0 10px; font-size: .78rem; }
 .mmap-zoomlbl { min-width: 38px; text-align: center; font-size: .78rem; color: var(--ink-soft); }
-.mindmap-viewport { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mindmap-viewport { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; }
 .mindmap-pan { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 8px; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
 .mindmap-scaler { position: relative; flex: none; }
 .mindmap { position: relative; transform-origin: 0 0; }
