@@ -388,7 +388,9 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   .bigicon { font-size: 3rem; }
   .blocksflow { margin-left: 0; }
   .addblockbar { margin-left: 0; }
-  .blockinsert { position: static; opacity: 1; width: auto; margin-bottom: 4px; }
+  .blockinsert { position: static; opacity: 0; width: auto; margin-bottom: 4px; }
+  .blockrow:focus-within .blockinsert,
+  .blockinsert:has(.addmenu:not([hidden])) { opacity: 1; }
   .blockrow { flex-direction: column; }
   .insert-btn { width: 36px; height: 36px; font-size: 1rem; border: 1px dashed var(--line); border-radius: 8px; }
   .chip { padding: 10px 14px; font-size: .9rem; min-height: 40px; }

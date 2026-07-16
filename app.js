@@ -7,6 +7,7 @@ let currentPageId = null;    // page open in main view
 let view = "page";           // "page" | "tasks" | "map"
 let tasksMode = "grouped";   // "grouped" | "flat"
 let mapRenameId = null;      // page id being renamed on the mindmap
+let mapScopeId = null;       // null = all projects; page id = that page + descendants
 let mapZoomAuto = true;      // true = scale to fit viewport
 let mapScale = 1;            // manual zoom level (1 = natural size)
 let mapLayout = null;        // last layout metrics for zoom handlers
@@ -823,6 +824,18 @@ function nudgeTask(id, dir) {
 const MM = { nodeH: 44, hGap: 56, vGap: 14, pad: 32, treeGap: 40, labelPad: 26, tailW: 54 };
 let mmMeasureCtx = null;
 
+function mmIsPhone() {
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function mmMapRoots() {
+  if (mapScopeId) {
+    const hit = findPage(mapScopeId);
+    if (hit) return [hit.page];
+  }
+  return ws.pages;
+}
+
 function mmNodeH() {
   return mmIsPhone() ? 48 : MM.nodeH;
 }
@@ -1074,7 +1087,6 @@ function buildMapNode(n) {
     inp.value = n.page.title === "Untitled" ? "" : n.page.title;
     inp.placeholder = "Name…";
     inp.onfocus = () => startEdit("mmap:" + n.page.id);
-    inp.onblur = () => endEdit();
     inp.onkeydown = e => {
       if (e.key === "Enter") { e.preventDefault(); finishMapRename(n.page, inp.value); }
       if (e.key === "Escape") { mapRenameId = null; render(); }
@@ -1119,9 +1131,19 @@ function buildMapNode(n) {
 }
 
 function renderMap(main) {
+  const roots = mmMapRoots();
+  const scoped = mapScopeId && roots.length === 1 && roots[0].id === mapScopeId;
+  const scopePage = scoped ? roots[0] : null;
+
   const head = el("div", "mmap-head");
-  head.append(el("h1", "viewtitle", "🗺️ Mindmap"));
-  head.append(el("p", "viewsub", "Projects branch left to right. Click to write, ✎ to rename. Pinch or scroll to zoom."));
+  const title = scoped
+    ? `🗺️ Mindmap · ${scopePage.icon} ${scopePage.title || "Untitled"}`
+    : "🗺️ Mindmap";
+  head.append(el("h1", "viewtitle", title));
+  const sub = scoped
+    ? "This page and its sub-pages. Pinch or scroll to zoom."
+    : "Projects branch left to right. Click to write, ✎ to rename. Pinch or scroll to zoom.";
+  head.append(el("p", "viewsub", sub));
   const zoomCtl = el("div", "mmap-zoomctl");
   const zoomOut = el("button", "mmap-zoombtn", "−");
   zoomOut.title = "Zoom out";
@@ -1136,16 +1158,22 @@ function renderMap(main) {
   zoomFit.onclick = () => mmZoomFit();
   zoomCtl.append(zoomOut, zoomLbl, zoomIn, zoomFit);
   head.append(zoomCtl);
-  const addRoot = el("button", "ghostbtn mmap-newroot", "＋ New project");
-  addRoot.onclick = () => record(() => {
-    const p = newPage("New project", "📁");
-    ws.pages.push(p);
-    mapRenameId = p.id;
-  });
-  head.append(addRoot);
+  if (scoped) {
+    const showAll = el("button", "ghostbtn mmap-showall", "Show all projects");
+    showAll.onclick = () => { mapScopeId = null; mapZoomAuto = true; render(); };
+    head.append(showAll);
+  } else {
+    const addRoot = el("button", "ghostbtn mmap-newroot", "＋ New project");
+    addRoot.onclick = () => record(() => {
+      const p = newPage("New project", "📁");
+      ws.pages.push(p);
+      mapRenameId = p.id;
+    });
+    head.append(addRoot);
+  }
   main.append(head);
 
-  if (!ws.pages.length) {
+  if (!roots.length) {
     const e = el("div", "mmap-empty");
     e.append(el("div", "big", "🌿"));
     e.append(el("p", null, "No projects yet. Create your first one to start mapping."));
@@ -1159,7 +1187,7 @@ function renderMap(main) {
     return;
   }
 
-  const { nodes, edges, width, height } = computeMindmapLayout(ws.pages);
+  const { nodes, edges, width, height } = computeMindmapLayout(roots);
   mapLayout = { width, height };
 
   const viewport = el("div", "mindmap-viewport");
@@ -1253,7 +1281,13 @@ function toggleSidebar() {
   currentPageId = ws.pages[0]?.id || null;
 
   $("#navTasks").onclick = () => { view = "tasks"; closeSidebar(); render(); };
-  $("#navMap").onclick = () => { view = "map"; mapZoomAuto = true; closeSidebar(); render(); };
+  $("#navMap").onclick = () => {
+    view = "map";
+    mapZoomAuto = true;
+    mapScopeId = currentPageId || null;
+    closeSidebar();
+    render();
+  };
   $("#navUndo").onclick = undo;
   $("#navRedo").onclick = redo;
   $("#newRootBtn").onclick = () => record(() => {
@@ -1265,7 +1299,7 @@ function toggleSidebar() {
   $("#menuBtn").onclick = toggleSidebar;
   $("#scrim").onclick = closeSidebar;
   $("#menuBtn").setAttribute("aria-expanded", "false");
-  $("#brand").onclick = () => { view = "map"; mapZoomAuto = true; render(); };
+  $("#brand").onclick = () => { view = "map"; mapZoomAuto = true; mapScopeId = null; render(); };
 
   document.addEventListener("keydown", e => {
     if (!(e.ctrlKey || e.metaKey)) return;
