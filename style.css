@@ -313,6 +313,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  height: 100%;
   padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
 }
 .mmap-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; margin-bottom: 8px; flex: none; }
@@ -324,8 +325,17 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 .mmap-zoombtn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .mmap-zoomfit { width: auto; padding: 0 10px; font-size: .78rem; }
 .mmap-zoomlbl { min-width: 38px; text-align: center; font-size: .78rem; color: var(--ink-soft); }
-.mindmap-viewport { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; }
-.mindmap-pan { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 8px; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
+.mindmap-viewport {
+  flex: 1 1 auto;
+  min-height: min(55vh, 420px);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--paper) 70%, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.mindmap-pan { flex: 1; min-height: 200px; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 8px; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
 .mindmap-scaler { position: relative; flex: none; }
 .mindmap { position: relative; transform-origin: 0 0; }
 .mindmap-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }

@@ -28,6 +28,25 @@ function defaultWorkspace() {
   return { version: 1, pages: [p], taskOrder: [], expanded: {} };
 }
 
+function normalizePage(page) {
+  if (!page || typeof page !== "object") return;
+  if (!Array.isArray(page.children)) page.children = [];
+  if (!Array.isArray(page.blocks)) page.blocks = [];
+  if (!page.id) page.id = uid();
+  if (page.title == null) page.title = "Untitled";
+  if (page.icon == null) page.icon = "📄";
+  for (const child of page.children) normalizePage(child);
+}
+
+function normalizeWorkspace(data) {
+  if (!data || typeof data !== "object") return defaultWorkspace();
+  if (!Array.isArray(data.pages)) data.pages = [];
+  data.expanded = data.expanded || {};
+  data.taskOrder = data.taskOrder || [];
+  for (const p of data.pages) normalizePage(p);
+  return data;
+}
+
 /* ---------- IndexedDB ---------- */
 const DB = "pagetree", STORE = "kv";
 function idb() {
@@ -971,7 +990,17 @@ function mmApplyZoom(pan, scaler, canvas, lbl) {
 function mmScheduleZoom(pan, scaler, canvas, lbl, tries = 0) {
   if (!pan || !mapLayout) return;
   if (pan.clientWidth < 2 || pan.clientHeight < 2) {
-    if (tries < 16) requestAnimationFrame(() => mmScheduleZoom(pan, scaler, canvas, lbl, tries + 1));
+    if (tries < 24) {
+      requestAnimationFrame(() => mmScheduleZoom(pan, scaler, canvas, lbl, tries + 1));
+      return;
+    }
+    // Last resort: layout had no size yet — still paint at 100% so nodes aren't invisible.
+    canvas.style.width = mapLayout.width + "px";
+    canvas.style.height = mapLayout.height + "px";
+    canvas.style.transform = "scale(1)";
+    scaler.style.width = mapLayout.width + "px";
+    scaler.style.height = mapLayout.height + "px";
+    if (lbl) lbl.textContent = "100%";
     return;
   }
   mmApplyZoom(pan, scaler, canvas, lbl);
@@ -1194,6 +1223,7 @@ function renderMap(main) {
       mapRenameId = p.id;
     });
     e.append(btn);
+    main.append(e);
     return;
   }
 
@@ -1295,9 +1325,7 @@ function toggleSidebar() {
 
 /* ---------- boot ---------- */
 (async function boot() {
-  ws = (await loadWS()) || defaultWorkspace();
-  ws.expanded = ws.expanded || {};
-  ws.taskOrder = ws.taskOrder || [];
+  ws = normalizeWorkspace((await loadWS()) || defaultWorkspace());
   currentPageId = ws.pages[0]?.id || null;
 
   $("#navTasks").onclick = () => { view = "tasks"; closeSidebar(); render(); };
@@ -1331,6 +1359,12 @@ function toggleSidebar() {
   updateUndoButtons();
 
   if ("serviceWorker" in navigator) {
-    try { await navigator.serviceWorker.register("sw.js"); } catch (e) { console.warn("SW failed", e); }
+    try {
+      const reg = await navigator.serviceWorker.register("sw.js");
+      reg.update().catch(() => {});
+      navigator.serviceWorker.addEventListener("message", ev => {
+        if (ev.data?.type === "pagetree-updated") location.reload();
+      });
+    } catch (e) { console.warn("SW failed", e); }
   }
 })();

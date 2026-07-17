@@ -9,7 +9,31 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=16">
+<script>
+/* One-shot purge of stale PWA caches that kept the blank mindmap bug alive. */
+(function () {
+  var KEY = "pagetree-purged-v16";
+  try {
+    if (localStorage.getItem(KEY)) return;
+    localStorage.setItem(KEY, "1");
+  } catch (e) { return; }
+  var done = function () { location.reload(); };
+  var tasks = [];
+  if ("serviceWorker" in navigator) {
+    tasks.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+      return Promise.all(rs.map(function (r) { return r.unregister(); }));
+    }));
+  }
+  if (window.caches && caches.keys) {
+    tasks.push(caches.keys().then(function (keys) {
+      return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+    }));
+  }
+  if (tasks.length) Promise.all(tasks).then(done).catch(done);
+  else done();
+})();
+</script>
 </head>
 <body>
 <div id="app">
@@ -32,6 +56,6 @@
 
   <main id="main"></main>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=16"></script>
 </body>
 </html>
