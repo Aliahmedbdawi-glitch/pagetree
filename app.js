@@ -908,6 +908,14 @@ function renderPage(main) {
   if (!hit) { renderEmpty(main); return; }
   const { page, path } = hit;
 
+  // Empty pages get a text block so you can type immediately.
+  let focusStarter = null;
+  if (page.blocks.length === 0) {
+    focusStarter = { id: uid(), type: "text", html: "" };
+    page.blocks.push(focusStarter);
+    save();
+  }
+
   const doc = el("div", "pagedoc");
 
   // breadcrumbs
@@ -944,6 +952,13 @@ function renderPage(main) {
   doc.append(flow);
 
   main.append(doc);
+
+  if (focusStarter) {
+    requestAnimationFrame(() => {
+      const node = document.querySelector(`.textblock[data-blk="${focusStarter.id}"]`);
+      if (node) node.focus();
+    });
+  }
 }
 
 function insertBlock(page, index, type, { focus = true } = {}) {
@@ -982,6 +997,11 @@ function addTextBlock(page, focus = true) {
 function buildAddBlockMenu(page) {
   const wrap = el("div", "addmenu-wrap");
   const btn = el("button", "tbtn tbtn-chip", "＋ Add block");
+  btn.title = "Add text block";
+  btn.onclick = () => insertBlock(page, getInsertIndex(page), "text");
+
+  const more = el("button", "tbtn tbtn-chip addmenu-more", "▾");
+  more.title = "Other block types";
   const menu = el("div", "addmenu");
   menu.hidden = true;
   const addItem = (label, type) => {
@@ -994,7 +1014,7 @@ function buildAddBlockMenu(page) {
   addItem("Table", "table");
   addItem("Page", "page");
   addItem("Image", "image");
-  btn.onclick = e => {
+  more.onclick = e => {
     e.stopPropagation();
     const opening = menu.hidden;
     document.querySelectorAll(".addmenu").forEach(m => { m.hidden = true; });
@@ -1008,7 +1028,7 @@ function buildAddBlockMenu(page) {
       }, 0);
     }
   };
-  wrap.append(btn, menu);
+  wrap.append(btn, more, menu);
   return wrap;
 }
 

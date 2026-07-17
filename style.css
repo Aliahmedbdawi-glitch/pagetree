@@ -255,7 +255,8 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   flex-wrap: wrap;
 }
 
-.addmenu-wrap { position: relative; }
+.addmenu-wrap { position: relative; display: inline-flex; align-items: stretch; gap: 2px; }
+.addmenu-more { padding-left: 8px; padding-right: 8px; min-width: 0; }
 .addmenu {
   position: absolute;
   top: calc(100% + 4px);
