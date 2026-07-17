@@ -12,6 +12,7 @@ let mapZoomAuto = true;      // true = scale to fit viewport
 let mapScale = 1;            // manual zoom level (1 = natural size)
 let mapLayout = null;        // last layout metrics for zoom handlers
 let editKey = null;          // active typing session (one undo step per focus)
+let selectedBlockId = null;  // block targeted by doc toolbar actions
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
@@ -326,8 +327,66 @@ function renderTree() {
 function openPage(id) {
   currentPageId = id; view = "page";
   mapRenameId = null;
+  selectedBlockId = null;
   closeSidebar();
   render();
+}
+
+function getSelectedBlockIndex(page) {
+  if (!selectedBlockId) return -1;
+  return page.blocks.findIndex(b => b.id === selectedBlockId);
+}
+function getInsertIndex(page) {
+  const idx = getSelectedBlockIndex(page);
+  return idx >= 0 ? idx + 1 : page.blocks.length;
+}
+function setSelectedBlock(blockId) {
+  selectedBlockId = blockId;
+  document.querySelectorAll(".block.selected").forEach(n => n.classList.remove("selected"));
+  const node = document.querySelector(`.block[data-blk="${blockId}"]`);
+  if (node) node.classList.add("selected");
+  updateDocToolbar();
+}
+function clearSelectedBlock() {
+  selectedBlockId = null;
+  document.querySelectorAll(".block.selected").forEach(n => n.classList.remove("selected"));
+  updateDocToolbar();
+}
+function updateDocToolbar() {
+  const toolbar = document.querySelector(".doctoolbar");
+  if (!toolbar) return;
+  const hit = findPage(currentPageId);
+  if (!hit) return;
+  const { page } = hit;
+  const idx = getSelectedBlockIndex(page);
+  const hasBlock = idx >= 0;
+  const up = toolbar.querySelector('[data-action="move-up"]');
+  const dn = toolbar.querySelector('[data-action="move-down"]');
+  const rm = toolbar.querySelector('[data-action="delete-block"]');
+  if (up) up.disabled = !hasBlock || idx === 0;
+  if (dn) dn.disabled = !hasBlock || idx >= page.blocks.length - 1;
+  if (rm) rm.disabled = !hasBlock;
+  const textFocused = !!document.activeElement?.closest?.(".textblock");
+  toolbar.querySelectorAll("[data-fmt]").forEach(btn => { btn.disabled = !textFocused; });
+}
+function moveSelectedBlock(page, dir) {
+  const idx = getSelectedBlockIndex(page);
+  if (idx < 0) return;
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= page.blocks.length) return;
+  const b = page.blocks[idx];
+  record(() => {
+    page.blocks.splice(idx, 1);
+    page.blocks.splice(newIdx, 0, b);
+  });
+}
+function deleteSelectedBlock(page) {
+  const idx = getSelectedBlockIndex(page);
+  if (idx < 0) return;
+  record(() => {
+    page.blocks.splice(idx, 1);
+    selectedBlockId = null;
+  });
 }
 function renderPage(main) {
   const hit = findPage(currentPageId);
@@ -357,53 +416,19 @@ function renderPage(main) {
   const title = autoDir(el("input", "titleinput"));
   title.value = page.title;
   title.placeholder = "Untitled";
-  title.onfocus = () => startEdit("title:" + page.id);
+  title.onfocus = () => { startEdit("title:" + page.id); clearSelectedBlock(); };
   title.onblur = () => endEdit();
   title.oninput = () => { page.title = title.value; save(); renderTree(); };
   head.append(icon, title);
   doc.append(head);
 
-  // page tools
-  const tools = el("div", "pagetools");
-  tools.append(buildAddBlockMenu(page));
-  const addSub = el("button", "chip", "＋ Sub-page");
-  addSub.onclick = () => record(() => addSubPage(page, { noSave: true }));
-  const copyBtn = el("button", "chip", "📋 Copy content");
-  copyBtn.onclick = async () => {
-    const ok = await copyPageContent(page);
-    if (ok) {
-      const prev = copyBtn.textContent;
-      copyBtn.textContent = "Copied!";
-      setTimeout(() => { copyBtn.textContent = prev; }, 1400);
-    } else {
-      alert("Could not copy to clipboard.");
-    }
-  };
-  const del = el("button", "chip danger", "🗑 Delete page");
-  del.onclick = () => record(() => {
-    removePageLinksTo(page.id);
-    const list = findParentList(page.id);
-    list.splice(list.findIndex(p => p.id === page.id), 1);
-    currentPageId = path.length ? path[path.length - 1].id : (ws.pages[0] && ws.pages[0].id);
-    if (!currentPageId) view = "map";
-  });
-  tools.append(addSub, copyBtn, del);
-  doc.append(tools);
+  doc.append(buildDocToolbar(page, path));
 
-  // blocks
   const flow = el("div", "blocksflow");
   page.blocks.forEach((b, i) => flow.append(renderBlock(page, b, i)));
   doc.append(flow);
 
-  // default text entry at bottom
-  const bar = el("div", "addblockbar");
-  const addText = el("button", "addtext-prompt", "Write something…");
-  addText.onclick = () => addTextBlock(page);
-  bar.append(addText);
-  doc.append(bar);
-
   main.append(doc);
-  main.append(buildFmtBar());
 }
 
 function insertBlock(page, index, type, { focus = true } = {}) {
@@ -439,51 +464,14 @@ function addTextBlock(page, focus = true) {
   insertBlock(page, page.blocks.length, "text", { focus });
 }
 
-function buildInsertMenu(page, index) {
-  const wrap = el("div", "insert-wrap");
-  const btn = el("button", "insert-btn", "＋");
-  btn.title = "Insert block";
-  const menu = el("div", "addmenu insert-menu");
-  menu.hidden = true;
-  const items = [
-    ["Text", "text"],
-    ["Checklist", "checklist"],
-    ["Table", "table"],
-    ["Page", "page"],
-    ["Image", "image"],
-  ];
-  for (const [label, type] of items) {
-    const item = el("button", "addmenu-item", label);
-    item.onclick = e => { e.stopPropagation(); menu.hidden = true; insertBlock(page, index, type); };
-    menu.append(item);
-  }
-  btn.onclick = e => {
-    e.stopPropagation();
-    const opening = menu.hidden;
-    document.querySelectorAll(".addmenu").forEach(m => { m.hidden = true; });
-    menu.hidden = !opening;
-    if (!menu.hidden) {
-      setTimeout(() => {
-        const close = ev => {
-          if (!wrap.contains(ev.target)) { menu.hidden = true; document.removeEventListener("click", close); }
-        };
-        document.addEventListener("click", close);
-      }, 0);
-    }
-  };
-  wrap.append(btn, menu);
-  return wrap;
-}
-
 function buildAddBlockMenu(page) {
   const wrap = el("div", "addmenu-wrap");
-  const btn = el("button", "chip", "＋ Add block");
+  const btn = el("button", "tbtn tbtn-chip", "＋ Add block");
   const menu = el("div", "addmenu");
   menu.hidden = true;
-  const end = () => page.blocks.length;
   const addItem = (label, type) => {
     const item = el("button", "addmenu-item", label);
-    item.onclick = () => { menu.hidden = true; insertBlock(page, end(), type); };
+    item.onclick = () => { menu.hidden = true; insertBlock(page, getInsertIndex(page), type); };
     menu.append(item);
   };
   addItem("Text", "text");
@@ -509,6 +497,84 @@ function buildAddBlockMenu(page) {
   return wrap;
 }
 
+function buildDocToolbar(page, path) {
+  const bar = el("div", "doctoolbar");
+  bar.setAttribute("role", "toolbar");
+
+  const insert = el("div", "doctoolbar-group");
+  insert.append(buildAddBlockMenu(page));
+
+  const fmt = el("div", "doctoolbar-group doctoolbar-fmt");
+  const cmd = (label, title, fn) => {
+    const btn = el("button", "tbtn", label);
+    btn.dataset.fmt = "1";
+    btn.title = title;
+    btn.onmousedown = e => e.preventDefault();
+    btn.onclick = fn;
+    return btn;
+  };
+  fmt.append(
+    cmd("B", "Bold", () => applyFormat(() => document.execCommand("bold"))),
+    cmd("S̶", "Strikethrough", () => applyFormat(() => document.execCommand("strikeThrough"))),
+    cmd("•", "Bulleted list", () => applyFormat(() => document.execCommand("insertUnorderedList"))),
+    cmd("1.", "Numbered list", () => applyFormat(() => document.execCommand("insertOrderedList"))),
+    cmd("📄", "Turn into page", () => turnSelectionIntoPage()),
+  );
+  const palette = ["#22303A", "#0E7C66", "#B3402E", "#B07D12", "#2456A6"];
+  for (const c of palette) {
+    const s = el("button", "swatch");
+    s.dataset.fmt = "1";
+    s.style.background = c;
+    s.title = "Text color";
+    s.onmousedown = e => e.preventDefault();
+    s.onclick = () => applyFormat(() => document.execCommand("foreColor", false, c));
+    fmt.append(s);
+  }
+
+  const blockActs = el("div", "doctoolbar-group");
+  const act = (label, title, action, fn) => {
+    const btn = el("button", "tbtn", label);
+    btn.dataset.action = action;
+    btn.title = title;
+    btn.onclick = fn;
+    return btn;
+  };
+  blockActs.append(
+    act("↑", "Move up", "move-up", () => moveSelectedBlock(page, -1)),
+    act("↓", "Move down", "move-down", () => moveSelectedBlock(page, 1)),
+    act("✕", "Delete block", "delete-block", () => deleteSelectedBlock(page)),
+  );
+
+  const pageActs = el("div", "doctoolbar-group doctoolbar-page");
+  const addSub = el("button", "tbtn tbtn-chip", "＋ Sub-page");
+  addSub.onclick = () => record(() => addSubPage(page, { noSave: true }));
+  const copyBtn = el("button", "tbtn tbtn-chip", "📋 Copy");
+  copyBtn.title = "Copy content";
+  copyBtn.onclick = async () => {
+    const ok = await copyPageContent(page);
+    if (ok) {
+      const prev = copyBtn.textContent;
+      copyBtn.textContent = "Copied!";
+      setTimeout(() => { copyBtn.textContent = prev; }, 1400);
+    } else {
+      alert("Could not copy to clipboard.");
+    }
+  };
+  const del = el("button", "tbtn tbtn-chip tbtn-danger", "🗑 Delete page");
+  del.onclick = () => record(() => {
+    removePageLinksTo(page.id);
+    const list = findParentList(page.id);
+    list.splice(list.findIndex(p => p.id === page.id), 1);
+    currentPageId = path.length ? path[path.length - 1].id : (ws.pages[0] && ws.pages[0].id);
+    if (!currentPageId) view = "map";
+  });
+  pageActs.append(addSub, copyBtn, del);
+
+  bar.append(insert, fmt, blockActs, pageActs);
+  requestAnimationFrame(() => updateDocToolbar());
+  return bar;
+}
+
 function pickImageAt(page, index, historyPushed = false) {
   const inp = document.createElement("input");
   inp.type = "file"; inp.accept = "image/*";
@@ -529,26 +595,13 @@ function pickImageAt(page, index, historyPushed = false) {
 /* ---------- block rendering ---------- */
 function renderBlock(page, b, idx) {
   const row = el("div", "blockrow");
-  const insert = el("div", "blockinsert");
-  insert.append(buildInsertMenu(page, idx));
-  row.append(insert);
-
   const wrap = el("div", "block");
-  wrap.tabIndex = 0;
+  wrap.dataset.blk = b.id;
+  if (selectedBlockId === b.id) wrap.classList.add("selected");
   wrap.onclick = e => {
-    if (e.target.closest(".blockbar") || e.target.closest(".insert-wrap")) return;
-    document.querySelectorAll(".block.selected").forEach(n => n.classList.remove("selected"));
-    wrap.classList.add("selected");
+    if (e.target.closest("button, input, .textblock, .tasktext, .tbl input, .pagelink")) return;
+    setSelectedBlock(b.id);
   };
-  const bar = el("div", "blockbar");
-  const up = el("button", null, "↑"); up.title = "Move up";
-  const dn = el("button", null, "↓"); dn.title = "Move down";
-  const rm = el("button", null, "✕"); rm.title = "Delete block";
-  up.onclick = () => { if (idx > 0) record(() => { page.blocks.splice(idx, 1); page.blocks.splice(idx - 1, 0, b); }); };
-  dn.onclick = () => { if (idx < page.blocks.length - 1) record(() => { page.blocks.splice(idx, 1); page.blocks.splice(idx + 1, 0, b); }); };
-  rm.onclick = () => record(() => { page.blocks.splice(idx, 1); });
-  bar.append(up, dn, rm);
-  wrap.append(bar);
 
   if (b.type === "text") wrap.append(renderText(b));
   else if (b.type === "checklist") wrap.append(renderChecklist(b));
@@ -578,26 +631,14 @@ function renderPageLink(b) {
 }
 
 /* text block with formatting */
-function setFmtBarVisible(show) {
-  const bar = $(".fmtbar");
-  const main = $("#main");
-  if (bar) bar.classList.toggle("show", show);
-  if (main) main.classList.toggle("has-fmtbar", show);
-}
-
 function renderText(b) {
   const d = autoDir(el("div", "textblock"));
   d.contentEditable = "true";
   d.dataset.blk = b.id;
   d.innerHTML = b.html || "";
   d.oninput = () => { b.html = d.innerHTML; save(); };
-  d.onfocus = () => { startEdit("text:" + b.id); setFmtBarVisible(true); };
-  d.onblur = () => {
-    endEdit();
-    setTimeout(() => {
-      if (!document.activeElement?.closest(".fmtbar,.textblock")) setFmtBarVisible(false);
-    }, 150);
-  };
+  d.onfocus = () => { startEdit("text:" + b.id); setSelectedBlock(b.id); };
+  d.onblur = () => { endEdit(); setTimeout(() => updateDocToolbar(), 0); };
   d.onpaste = e => {
     e.preventDefault();
     pushUndo();
@@ -606,36 +647,6 @@ function renderText(b) {
     save();
   };
   return d;
-}
-function buildFmtBar() {
-  const bar = el("div", "fmtbar");
-  bar.setAttribute("role", "toolbar");
-  const tools = el("div", "fmt-tools");
-  const colors = el("div", "fmt-colors");
-  const cmd = (label, title, fn) => {
-    const btn = el("button", null, label);
-    btn.title = title;
-    btn.onmousedown = e => e.preventDefault(); // keep selection
-    btn.onclick = fn;
-    return btn;
-  };
-  tools.append(
-    cmd("B", "Bold", () => applyFormat(() => document.execCommand("bold"))),
-    cmd("S̶", "Strikethrough", () => applyFormat(() => document.execCommand("strikeThrough"))),
-    cmd("•", "Bulleted list", () => applyFormat(() => document.execCommand("insertUnorderedList"))),
-    cmd("1.", "Numbered list", () => applyFormat(() => document.execCommand("insertOrderedList"))),
-    cmd("📄", "Turn into page", () => turnSelectionIntoPage()),
-  );
-  const palette = ["#22303A", "#0E7C66", "#B3402E", "#B07D12", "#2456A6"];
-  for (const c of palette) {
-    const s = el("button", "swatch");
-    s.style.background = c; s.title = "Text color";
-    s.onmousedown = e => e.preventDefault();
-    s.onclick = () => applyFormat(() => document.execCommand("foreColor", false, c));
-    colors.append(s);
-  }
-  bar.append(tools, colors);
-  return bar;
 }
 
 function turnSelectionIntoPage() {
@@ -668,7 +679,7 @@ function renderChecklist(b) {
     cb.onchange = () => record(() => { it.done = cb.checked; });
     const txt = autoDir(el("input", "tasktext"));
     txt.value = it.text; txt.placeholder = "Task…";
-    txt.onfocus = () => startEdit("task:" + b.id + ":" + i);
+    txt.onfocus = () => { startEdit("task:" + b.id + ":" + i); setSelectedBlock(b.id); };
     txt.onblur = () => endEdit();
     txt.oninput = () => { it.text = txt.value; save(); };
     txt.onkeydown = e => {
@@ -713,7 +724,7 @@ function renderTable(b) {
   b.columns.forEach((c, ci) => {
     const th = el("th");
     const inp = autoDir(el("input")); inp.value = c;
-    inp.onfocus = () => startEdit("tbl:" + b.id + ":h:" + ci);
+    inp.onfocus = () => { startEdit("tbl:" + b.id + ":h:" + ci); setSelectedBlock(b.id); };
     inp.onblur = () => endEdit();
     inp.oninput = () => { b.columns[ci] = inp.value; save(); };
     th.append(inp); thr.append(th);
@@ -724,7 +735,7 @@ function renderTable(b) {
     row.forEach((cell, ci) => {
       const td = el("td");
       const inp = autoDir(el("input")); inp.value = cell;
-      inp.onfocus = () => startEdit("tbl:" + b.id + ":r:" + ri + ":" + ci);
+      inp.onfocus = () => { startEdit("tbl:" + b.id + ":r:" + ri + ":" + ci); setSelectedBlock(b.id); };
       inp.onblur = () => endEdit();
       inp.oninput = () => { row[ci] = inp.value; save(); };
       td.append(inp); tr.append(td);
@@ -732,7 +743,7 @@ function renderTable(b) {
     t.append(tr);
   });
   holder.append(t);
-  const tools = el("div", "pagetools");
+  const tools = el("div", "tbltools");
   const addR = el("button", "chip", "＋ Row");
   addR.onclick = () => record(() => b.rows.push(b.columns.map(() => "")));
   const addC = el("button", "chip", "＋ Column");
@@ -1297,7 +1308,6 @@ function render() {
   $("#navMap").classList.toggle("active", view === "map");
   const main = $("#main");
   main.className = view === "map" ? "mmap-main" : "";
-  main.classList.remove("has-fmtbar");
   main.innerHTML = "";
   if (view === "tasks") renderTasks(main);
   else if (view === "map") renderMap(main);
