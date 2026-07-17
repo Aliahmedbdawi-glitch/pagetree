@@ -113,7 +113,7 @@ input, textarea { font: inherit; color: inherit; }
 .bigicon:hover { background: var(--accent-soft); }
 .titleinput { width: 100%; font-size: 2.5rem; font-weight: 700; border: none; background: none; outline: none; padding: 2px 0; min-width: 0; line-height: 1.2; }
 
-/* ---------- document toolbar (Google Docs style) ---------- */
+/* ---------- document toolbar ---------- */
 .doctoolbar {
   position: sticky;
   top: 0;
@@ -121,53 +121,52 @@ input, textarea { font: inherit; color: inherit; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 6px;
-  padding: 8px 0 10px;
+  gap: 6px 8px;
+  padding: 10px 12px;
   margin: 0 0 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--paper);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
 }
 .doctoolbar-group {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .doctoolbar-group + .doctoolbar-group {
-  border-left: 1px solid var(--line);
-  padding-left: 8px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  padding-left: 10px;
   margin-left: 2px;
 }
 .tbtn {
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: .85rem;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: .84rem;
   color: var(--ink-soft);
-  min-height: 30px;
-  min-width: 30px;
+  min-height: 36px;
+  min-width: 36px;
   line-height: 1.2;
+  background: transparent;
+  border: none;
 }
 .tbtn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .tbtn:disabled { opacity: .35; cursor: default; }
-.tbtn-chip {
-  font-size: .78rem;
-  padding: 4px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-}
-.tbtn-chip:hover:not(:disabled) { border-color: var(--accent); }
-.tbtn-danger:hover:not(:disabled) { background: #FBEDEA; color: var(--danger); border-color: var(--danger); }
+.tbtn-danger:hover:not(:disabled) { background: #FBEDEA; color: var(--danger); }
 .doctoolbar-fmt .swatch {
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
-  min-height: 22px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
   padding: 0;
-  border-radius: 50%;
-  border: 2px solid var(--line);
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  cursor: pointer;
 }
-.doctoolbar-fmt .swatch:hover:not(:disabled) { border-color: var(--ink-soft); transform: scale(1.08); }
+.doctoolbar-fmt .swatch:hover:not(:disabled) {
+  border-color: var(--ink-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink-soft) 25%, transparent);
+}
 
 .chip { font-size: .78rem; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink-soft); }
 .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -255,8 +254,8 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   flex-wrap: wrap;
 }
 
-.addmenu-wrap { position: relative; display: inline-flex; align-items: stretch; gap: 2px; }
-.addmenu-more { padding-left: 8px; padding-right: 8px; min-width: 0; }
+.addmenu-wrap { position: relative; display: inline-flex; align-items: stretch; gap: 0; }
+.addmenu-more { padding-left: 8px; padding-right: 8px; min-width: 36px; }
 .addmenu {
   position: absolute;
   top: calc(100% + 4px);
@@ -462,11 +461,10 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   .pagedoc { max-width: none; }
   .titleinput { font-size: 1.75rem; }
   .bigicon { font-size: 3rem; }
-  .doctoolbar { gap: 6px 4px; padding: 6px 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .doctoolbar-group + .doctoolbar-group { padding-left: 6px; margin-left: 0; }
-  .tbtn { padding: 6px 10px; min-height: 36px; min-width: 36px; font-size: .9rem; }
-  .tbtn-chip { padding: 6px 10px; font-size: .82rem; }
-  .doctoolbar-fmt .swatch { width: 28px; height: 28px; min-width: 28px; min-height: 28px; }
+  .doctoolbar { gap: 6px 6px; padding: 8px 10px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .doctoolbar-group + .doctoolbar-group { padding-left: 8px; margin-left: 0; }
+  .tbtn { padding: 8px 12px; min-height: 40px; min-width: 40px; font-size: .88rem; }
+  .doctoolbar-fmt .swatch { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
   .chip { padding: 10px 14px; font-size: .9rem; min-height: 40px; }
   .tbltools .chip { padding: 8px 10px; font-size: .88rem; min-height: 36px; }
   .taskrow { padding: 10px 8px; min-height: 44px; }

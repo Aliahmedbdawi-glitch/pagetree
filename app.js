@@ -996,11 +996,11 @@ function addTextBlock(page, focus = true) {
 
 function buildAddBlockMenu(page) {
   const wrap = el("div", "addmenu-wrap");
-  const btn = el("button", "tbtn tbtn-chip", "＋ Add block");
+  const btn = el("button", "tbtn", "＋ Text");
   btn.title = "Add text block";
   btn.onclick = () => insertBlock(page, getInsertIndex(page), "text");
 
-  const more = el("button", "tbtn tbtn-chip addmenu-more", "▾");
+  const more = el("button", "tbtn addmenu-more", "▾");
   more.title = "Other block types";
   const menu = el("div", "addmenu");
   menu.hidden = true;
@@ -1081,9 +1081,10 @@ function buildDocToolbar(page, path) {
   );
 
   const pageActs = el("div", "doctoolbar-group doctoolbar-page");
-  const addSub = el("button", "tbtn tbtn-chip", "＋ Sub-page");
+  const addSub = el("button", "tbtn", "＋ Page");
+  addSub.title = "Add sub-page";
   addSub.onclick = () => record(() => addSubPage(page, { noSave: true }));
-  const copyBtn = el("button", "tbtn tbtn-chip", "📋 Copy");
+  const copyBtn = el("button", "tbtn", "Copy");
   copyBtn.title = "Copy content";
   copyBtn.onclick = async () => {
     const ok = await copyPageContent(page);
@@ -1095,7 +1096,8 @@ function buildDocToolbar(page, path) {
       alert("Could not copy to clipboard.");
     }
   };
-  const del = el("button", "tbtn tbtn-chip tbtn-danger", "🗑 Delete page");
+  const del = el("button", "tbtn tbtn-danger", "Delete");
+  del.title = "Delete page";
   del.onclick = () => record(() => {
     removePageLinksTo(page.id);
     const list = findParentList(page.id);
