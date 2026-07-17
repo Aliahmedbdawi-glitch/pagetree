@@ -19,6 +19,8 @@ let cloudReady = false;      // schema reachable + logged in
 let cloudSaveTimer = null;
 let localUpdatedAt = 0;
 let appUserId = null;
+let appStarting = null;      // in-flight startApp promise (single-flight)
+let preferOffline = false;   // user chose Continue offline — ignore cloud auth until they sign in
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
@@ -153,7 +155,15 @@ function queueCloudSave() {
   }, 600);
 }
 async function resolveWorkspace(userId) {
-  const local = await loadLocalBundle();
+  let local = { ws: null, updatedAt: 0 };
+  try {
+    local = await Promise.race([
+      loadLocalBundle(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("Local storage timed out")), 5000)),
+    ]);
+  } catch (e) {
+    console.warn("local load failed", e);
+  }
   let cloud = null;
   try {
     cloud = await Promise.race([
@@ -298,10 +308,20 @@ function hideAuthGate() {
   const gate = $("#authGate");
   if (gate) { gate.hidden = true; gate.innerHTML = ""; }
 }
+function showAppFromWorkspace(workspace) {
+  ws = normalizeWorkspace(workspace);
+  currentPageId = ws.pages[0]?.id || null;
+  hideAuthGate();
+  updateAccountButton();
+  render();
+  updateUndoButtons();
+}
 async function startOfflineApp() {
+  preferOffline = true;
   session = null;
   appUserId = null;
   cloudReady = false;
+  appStarting = null;
   hideAuthGate();
   try {
     ws = normalizeWorkspace((await loadWS()) || defaultWorkspace());
@@ -313,8 +333,13 @@ async function startOfflineApp() {
   setSyncBadge("offline");
   render();
   updateUndoButtons();
+  // Clear persisted session so TOKEN_REFRESHED / reload don't pull us back into Loading.
+  if (sb) {
+    try { await sb.auth.signOut({ scope: "local" }); } catch (_) {}
+  }
 }
 async function startApp() {
+  if (preferOffline) return;
   const userId = session?.user?.id;
   if (!userId) {
     showAuthGate("Session expired. Sign in again.");
@@ -327,27 +352,82 @@ async function startApp() {
     render();
     return;
   }
-  appUserId = userId;
-  showAuthGate("Loading your pages…");
-  try {
-    ws = normalizeWorkspace(await resolveWorkspace(userId));
-    currentPageId = ws.pages[0]?.id || null;
-    cloudReady = true;
-    hideAuthGate();
-    updateAccountButton();
-    setSyncBadge("synced");
-    render();
-    updateUndoButtons();
-  } catch (e) {
-    console.error("startApp failed", e);
-    appUserId = null;
-    showAuthGate(e.message || "Could not load workspace. Try again or continue offline.");
-  }
+  // Avoid rebuilding the gate / re-fetching when getSession + onAuthStateChange both fire.
+  if (appStarting) return appStarting;
+
+  appStarting = (async () => {
+    appUserId = userId;
+    try {
+      // Local-first: open the app immediately on refresh. Never flash the sign-in form.
+      let local = { ws: null, updatedAt: 0 };
+      try {
+        local = await Promise.race([
+          loadLocalBundle(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("Local storage timed out")), 3000)),
+        ]);
+      } catch (e) {
+        console.warn("local load failed", e);
+      }
+      if (preferOffline) return;
+
+      if (local.ws) {
+        localUpdatedAt = local.updatedAt || 0;
+        showAppFromWorkspace(local.ws);
+        setSyncBadge("syncing");
+      } else {
+        // No local cache yet — open immediately; cloud fills in when ready.
+        showAppFromWorkspace(defaultWorkspace());
+        setSyncBadge("syncing");
+      }
+
+      // Cloud sync in the background.
+      try {
+        const cloud = await Promise.race([
+          cloudFetchWorkspace(userId),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("Cloud timed out")), 10000)),
+        ]);
+        cloudReady = true;
+        if (preferOffline) return;
+        if (cloud) {
+          if (!local.ws || cloud.updatedAt >= (local.updatedAt || 0)) {
+            localUpdatedAt = cloud.updatedAt;
+            await idbPut("workspace", cloud.ws);
+            await idbPut(LOCAL_META_KEY, { updatedAt: cloud.updatedAt });
+            showAppFromWorkspace(cloud.ws);
+          } else {
+            queueCloudSave();
+          }
+        } else if (local.ws) {
+          queueCloudSave();
+        } else {
+          // Keep the default workspace we already showed; push it up.
+          queueCloudSave();
+        }
+        setSyncBadge("synced");
+      } catch (e) {
+        console.warn("cloud load failed", e);
+        cloudReady = false;
+        setSyncBadge("offline");
+      }
+      updateAccountButton();
+    } catch (e) {
+      console.error("startApp failed", e);
+      appUserId = null;
+      if (!preferOffline) {
+        showAuthGate(e.message || "Could not load workspace. Try again or continue offline.");
+      }
+    } finally {
+      appStarting = null;
+    }
+  })();
+  return appStarting;
 }
 async function handleSignedOut() {
+  if (preferOffline) return;
   session = null;
   appUserId = null;
   cloudReady = false;
+  appStarting = null;
   ws = null;
   $("#main").innerHTML = "";
   updateAccountButton();
@@ -881,8 +961,6 @@ function updateDocToolbar() {
   if (up) up.disabled = !hasBlock || idx === 0;
   if (dn) dn.disabled = !hasBlock || idx >= page.blocks.length - 1;
   if (rm) rm.disabled = !hasBlock;
-  const textFocused = !!document.activeElement?.closest?.(".textblock");
-  toolbar.querySelectorAll("[data-fmt]").forEach(btn => { btn.disabled = !textFocused; });
 }
 function moveSelectedBlock(page, dir) {
   const idx = getSelectedBlockIndex(page);
@@ -1032,6 +1110,47 @@ function buildAddBlockMenu(page) {
   return wrap;
 }
 
+const TEXT_COLORS = ["#22303A", "#0E7C66", "#B3402E", "#B07D12", "#2456A6"];
+
+function buildColorMenu() {
+  const wrap = el("div", "colormenu-wrap");
+  const btn = el("button", "tbtn color-trigger");
+  btn.title = "Text color";
+  btn.setAttribute("aria-label", "Text color");
+  const dot = el("span", "color-trigger-dot");
+  btn.append(dot);
+  const menu = el("div", "colormenu");
+  menu.hidden = true;
+  for (const c of TEXT_COLORS) {
+    const s = el("button", "colormenu-swatch");
+    s.style.background = c;
+    s.title = "Text color";
+    s.onmousedown = e => e.preventDefault();
+    s.onclick = () => {
+      menu.hidden = true;
+      dot.style.background = c;
+      applyFormat(() => document.execCommand("foreColor", false, c));
+    };
+    menu.append(s);
+  }
+  btn.onclick = e => {
+    e.stopPropagation();
+    const opening = menu.hidden;
+    document.querySelectorAll(".colormenu").forEach(m => { m.hidden = true; });
+    menu.hidden = !opening;
+    if (!menu.hidden) {
+      setTimeout(() => {
+        const close = ev => {
+          if (!wrap.contains(ev.target)) { menu.hidden = true; document.removeEventListener("click", close); }
+        };
+        document.addEventListener("click", close);
+      }, 0);
+    }
+  };
+  wrap.append(btn, menu);
+  return wrap;
+}
+
 function buildDocToolbar(page, path) {
   const bar = el("div", "doctoolbar");
   bar.setAttribute("role", "toolbar");
@@ -1054,17 +1173,8 @@ function buildDocToolbar(page, path) {
     cmd("•", "Bulleted list", () => applyFormat(() => document.execCommand("insertUnorderedList"))),
     cmd("1.", "Numbered list", () => applyFormat(() => document.execCommand("insertOrderedList"))),
     cmd("📄", "Turn into page", () => turnSelectionIntoPage()),
+    buildColorMenu(),
   );
-  const palette = ["#22303A", "#0E7C66", "#B3402E", "#B07D12", "#2456A6"];
-  for (const c of palette) {
-    const s = el("button", "swatch");
-    s.dataset.fmt = "1";
-    s.style.background = c;
-    s.title = "Text color";
-    s.onmousedown = e => e.preventDefault();
-    s.onclick = () => applyFormat(() => document.execCommand("foreColor", false, c));
-    fmt.append(s);
-  }
 
   const blockActs = el("div", "doctoolbar-group");
   const act = (label, title, action, fn) => {
@@ -1922,13 +2032,24 @@ function toggleSidebar() {
     window.addEventListener("online", () => { if (session) queueCloudSave(); });
 
     if (sb) {
-      // Show gate immediately so the page is never blank while auth resolves.
-      showAuthGate();
-      sb.auth.onAuthStateChange(async (_event, next) => {
+      sb.auth.onAuthStateChange(async (event, next) => {
+        // Explicit sign-in from the form should leave offline mode.
+        if (event === "SIGNED_IN") preferOffline = false;
+        if (preferOffline && event !== "SIGNED_OUT") return;
+
         session = next;
         try {
-          if (session?.user) await startApp();
-          else await handleSignedOut();
+          // Token refresh only updates the session — do not re-run workspace load.
+          if (event === "TOKEN_REFRESHED") return;
+          if (event === "SIGNED_OUT") {
+            await handleSignedOut();
+            return;
+          }
+          if ((event === "INITIAL_SESSION" || event === "SIGNED_IN") && session?.user) {
+            await startApp();
+          } else if (event === "INITIAL_SESSION" && !session?.user) {
+            showAuthGate();
+          }
         } catch (e) {
           console.error("auth state handler failed", e);
           showAuthGate(e.message || "Auth error. Continue offline or try again.");
@@ -1937,9 +2058,11 @@ function toggleSidebar() {
       try {
         const { data } = await sb.auth.getSession();
         session = data.session;
-        if (session?.user) await startApp();
+        if (session?.user && !preferOffline) await startApp();
+        else if (!session?.user) showAuthGate();
       } catch (e) {
         console.warn("getSession failed", e);
+        showAuthGate();
       }
     } else {
       await startOfflineApp();
