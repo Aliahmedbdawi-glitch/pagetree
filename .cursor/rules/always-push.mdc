@@ -1,0 +1,15 @@
+﻿---
+description: Always commit and push finished work to origin in this project
+alwaysApply: true
+---
+
+# Always push changes
+
+After finishing any code change in this project:
+
+1. Commit the relevant files with a clear message (unless the user said not to commit).
+2. Immediately push to the remote tracking branch (`git push -u origin HEAD` if needed).
+3. Do not leave finished work only local — push is required by default for this repo.
+4. Skip push only if the user explicitly says not to, or if there is nothing to commit.
+
+Never force-push to `main`/`master` unless the user explicitly requests it.
