@@ -156,7 +156,10 @@ async function resolveWorkspace(userId) {
   const local = await loadLocalBundle();
   let cloud = null;
   try {
-    cloud = await cloudFetchWorkspace(userId);
+    cloud = await Promise.race([
+      cloudFetchWorkspace(userId),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("Cloud timed out")), 10000)),
+    ]);
     cloudReady = true;
   } catch (e) {
     console.warn("cloud load failed", e);
@@ -221,7 +224,11 @@ function showAuthGate(msg) {
   pass.type = "password"; pass.placeholder = "Password"; pass.required = true; pass.minLength = 6;
   pass.autocomplete = "current-password";
   const err = el("p", "autherr");
-  if (msg) { err.textContent = msg; err.hidden = false; } else err.hidden = true;
+  if (msg) {
+    err.textContent = msg;
+    err.hidden = false;
+    if (/loading/i.test(msg)) err.classList.add("ok");
+  } else err.hidden = true;
   const readCreds = () => {
     const em = email.value.trim();
     const pw = pass.value;
@@ -317,20 +324,23 @@ async function startApp() {
     hideAuthGate();
     updateAccountButton();
     setSyncBadge(cloudReady ? "synced" : "offline");
+    render();
     return;
   }
   appUserId = userId;
-  hideAuthGate();
+  showAuthGate("Loading your pages…");
   try {
     ws = normalizeWorkspace(await resolveWorkspace(userId));
     currentPageId = ws.pages[0]?.id || null;
     cloudReady = true;
+    hideAuthGate();
     updateAccountButton();
     setSyncBadge("synced");
     render();
     updateUndoButtons();
   } catch (e) {
     console.error("startApp failed", e);
+    appUserId = null;
     showAuthGate(e.message || "Could not load workspace. Try again or continue offline.");
   }
 }

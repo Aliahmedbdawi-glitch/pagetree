@@ -363,6 +363,9 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   background: color-mix(in srgb, var(--paper) 88%, var(--ink));
   backdrop-filter: blur(4px);
 }
+.authgate[hidden] {
+  display: none !important;
+}
 .authcard {
   width: min(100%, 380px);
   padding: 28px 24px;
