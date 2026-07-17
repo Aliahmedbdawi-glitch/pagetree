@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="style.css?v=18">
+<link rel="stylesheet" href="style.css?v=19">
 <script>
 /* One-shot purge of stale PWA caches that kept the blank mindmap bug alive. */
 (function () {
@@ -43,6 +43,7 @@
     <nav id="topnav">
       <button id="navUndo" class="iconbtn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
       <button id="navRedo" class="iconbtn" title="Redo (Ctrl+Y)" aria-label="Redo" disabled>↷</button>
+      <button id="navAccount" class="navbtn" title="Account" hidden>👤</button>
       <button id="navTasks" class="navbtn" title="All tasks">✅ Tasks</button>
       <button id="navMap" class="navbtn" title="Map view">🗺️ Map</button>
     </nav>
@@ -55,7 +56,11 @@
   <div id="scrim"></div>
 
   <main id="main"></main>
+  <div id="authGate" class="authgate" hidden></div>
+  <div id="syncBadge" class="syncbadge" hidden></div>
 </div>
-<script src="app.js?v=17"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.js"></script>
+<script src="config.js?v=1"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>

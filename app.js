@@ -13,6 +13,12 @@ let mapScale = 1;            // manual zoom level (1 = natural size)
 let mapLayout = null;        // last layout metrics for zoom handlers
 let editKey = null;          // active typing session (one undo step per focus)
 let selectedBlockId = null;  // block targeted by doc toolbar actions
+let sb = null;               // Supabase client
+let session = null;          // active auth session
+let cloudReady = false;      // schema reachable + logged in
+let cloudSaveTimer = null;
+let localUpdatedAt = 0;
+let appUserId = null;
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
@@ -48,8 +54,10 @@ function normalizeWorkspace(data) {
   return data;
 }
 
-/* ---------- IndexedDB ---------- */
+/* ---------- local + cloud storage ---------- */
 const DB = "pagetree", STORE = "kv";
+const LOCAL_META_KEY = "workspace_meta";
+
 function idb() {
   return new Promise((res, rej) => {
     const r = indexedDB.open(DB, 1);
@@ -58,25 +66,233 @@ function idb() {
     r.onerror = () => rej(r.error);
   });
 }
-async function loadWS() {
+async function idbGet(key) {
   try {
     const db = await idb();
     return await new Promise((res) => {
-      const q = db.transaction(STORE).objectStore(STORE).get("workspace");
-      q.onsuccess = () => res(q.result || null);
+      const q = db.transaction(STORE).objectStore(STORE).get(key);
+      q.onsuccess = () => res(q.result ?? null);
       q.onerror = () => res(null);
     });
   } catch { return null; }
+}
+async function idbPut(key, value) {
+  const db = await idb();
+  db.transaction(STORE, "readwrite").objectStore(STORE).put(value, key);
+}
+async function loadLocalBundle() {
+  const data = await idbGet("workspace");
+  const meta = await idbGet(LOCAL_META_KEY);
+  return {
+    ws: data ? normalizeWorkspace(data) : null,
+    updatedAt: meta?.updatedAt || 0,
+  };
+}
+async function loadWS() {
+  const { ws } = await loadLocalBundle();
+  return ws;
 }
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
+    localUpdatedAt = Date.now();
     try {
-      const db = await idb();
-      db.transaction(STORE, "readwrite").objectStore(STORE).put(ws, "workspace");
-    } catch (e) { console.error("save failed", e); }
+      await idbPut("workspace", ws);
+      await idbPut(LOCAL_META_KEY, { updatedAt: localUpdatedAt });
+    } catch (e) { console.error("local save failed", e); }
+    queueCloudSave();
   }, 250);
+}
+
+function initSupabase() {
+  const cfg = window.PAGETREE_SUPABASE;
+  if (!cfg?.url || !cfg?.key || !window.supabase) return null;
+  return window.supabase.createClient(cfg.url, cfg.key, {
+    auth: { persistSession: true, autoRefreshToken: true },
+  });
+}
+async function cloudFetchWorkspace(userId) {
+  const { data, error } = await sb.from("workspaces")
+    .select("data, updated_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    ws: normalizeWorkspace(data.data),
+    updatedAt: new Date(data.updated_at).getTime(),
+  };
+}
+async function cloudPushWorkspace(userId, workspace) {
+  const payload = {
+    user_id: userId,
+    data: workspace,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await sb.from("workspaces").upsert(payload, { onConflict: "user_id" });
+  if (error) throw error;
+}
+function queueCloudSave() {
+  if (!cloudReady || !session?.user?.id) return;
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(async () => {
+    setSyncBadge("syncing");
+    try {
+      await cloudPushWorkspace(session.user.id, ws);
+      setSyncBadge("synced");
+    } catch (e) {
+      console.error("cloud save failed", e);
+      setSyncBadge("offline");
+    }
+  }, 600);
+}
+async function resolveWorkspace(userId) {
+  const local = await loadLocalBundle();
+  let cloud = null;
+  try {
+    cloud = await cloudFetchWorkspace(userId);
+    cloudReady = true;
+  } catch (e) {
+    console.warn("cloud load failed", e);
+    cloudReady = false;
+    setSyncBadge("offline");
+    return local.ws || defaultWorkspace();
+  }
+  if (cloud && local.ws) {
+    if (cloud.updatedAt >= local.updatedAt) {
+      localUpdatedAt = cloud.updatedAt;
+      await idbPut("workspace", cloud.ws);
+      await idbPut(LOCAL_META_KEY, { updatedAt: cloud.updatedAt });
+      return cloud.ws;
+    }
+    queueCloudSave();
+    return local.ws;
+  }
+  if (cloud) {
+    localUpdatedAt = cloud.updatedAt;
+    await idbPut("workspace", cloud.ws);
+    await idbPut(LOCAL_META_KEY, { updatedAt: cloud.updatedAt });
+    return cloud.ws;
+  }
+  if (local.ws) {
+    queueCloudSave();
+    return local.ws;
+  }
+  return defaultWorkspace();
+}
+function setSyncBadge(state) {
+  const badge = $("#syncBadge");
+  if (!badge) return;
+  if (!cloudReady) { badge.hidden = true; return; }
+  badge.hidden = false;
+  badge.className = "syncbadge " + state;
+  badge.textContent = state === "syncing" ? "Syncing…" : state === "synced" ? "Synced" : "Offline";
+}
+function updateAccountButton() {
+  const btn = $("#navAccount");
+  if (!btn) return;
+  if (session?.user) {
+    btn.hidden = false;
+    const email = session.user.email || "Account";
+    btn.textContent = email.split("@")[0];
+    btn.title = email + " — click to sign out";
+  } else {
+    btn.hidden = true;
+  }
+}
+function showAuthGate(msg) {
+  const gate = $("#authGate");
+  if (!gate) return;
+  gate.hidden = false;
+  gate.innerHTML = "";
+  const card = el("div", "authcard");
+  card.append(el("h2", null, "Sign in to Pagetree"));
+  card.append(el("p", "authsub", "Your pages sync across devices."));
+  const form = el("form", "authform");
+  const email = el("input", "authinput");
+  email.type = "email"; email.placeholder = "Email"; email.required = true; email.autocomplete = "email";
+  const pass = el("input", "authinput");
+  pass.type = "password"; pass.placeholder = "Password"; pass.required = true; pass.minLength = 6;
+  pass.autocomplete = "current-password";
+  const err = el("p", "autherr");
+  if (msg) { err.textContent = msg; err.hidden = false; } else err.hidden = true;
+  const actions = el("div", "authactions");
+  const signIn = el("button", "authbtn primary", "Sign in");
+  signIn.type = "submit";
+  const signUp = el("button", "authbtn", "Create account");
+  signUp.type = "button";
+  actions.append(signIn, signUp);
+  form.append(email, pass, err, actions);
+  form.onsubmit = async e => {
+    e.preventDefault();
+    err.hidden = true;
+    signIn.disabled = signUp.disabled = true;
+    try {
+      const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pass.value });
+      if (error) throw error;
+    } catch (ex) {
+      err.textContent = ex.message || "Sign in failed";
+      err.hidden = false;
+    } finally {
+      signIn.disabled = signUp.disabled = false;
+    }
+  };
+  signUp.onclick = async () => {
+    err.hidden = true;
+    signIn.disabled = signUp.disabled = true;
+    try {
+      const { error } = await sb.auth.signUp({
+        email: email.value.trim(),
+        password: pass.value,
+      });
+      if (error) throw error;
+      err.textContent = "Account created. Check your email if confirmation is required, then sign in.";
+      err.hidden = false;
+      err.classList.add("ok");
+    } catch (ex) {
+      err.textContent = ex.message || "Sign up failed";
+      err.hidden = false;
+      err.classList.remove("ok");
+    } finally {
+      signIn.disabled = signUp.disabled = false;
+    }
+  };
+  card.append(form);
+  gate.append(card);
+}
+function hideAuthGate() {
+  const gate = $("#authGate");
+  if (gate) { gate.hidden = true; gate.innerHTML = ""; }
+}
+async function startApp() {
+  const userId = session.user.id;
+  if (appUserId === userId && ws) {
+    hideAuthGate();
+    updateAccountButton();
+    setSyncBadge(cloudReady ? "synced" : "offline");
+    return;
+  }
+  appUserId = userId;
+  hideAuthGate();
+  ws = normalizeWorkspace(await resolveWorkspace(userId));
+  currentPageId = ws.pages[0]?.id || null;
+  cloudReady = true;
+  updateAccountButton();
+  setSyncBadge("synced");
+  render();
+  updateUndoButtons();
+}
+async function handleSignedOut() {
+  session = null;
+  appUserId = null;
+  cloudReady = false;
+  ws = null;
+  hideAuthGate();
+  showAuthGate();
+  $("#main").innerHTML = "";
+  updateAccountButton();
+  setSyncBadge("offline");
 }
 
 /* ---------- undo / redo ---------- */
@@ -1335,8 +1551,7 @@ function toggleSidebar() {
 
 /* ---------- boot ---------- */
 (async function boot() {
-  ws = normalizeWorkspace((await loadWS()) || defaultWorkspace());
-  currentPageId = ws.pages[0]?.id || null;
+  sb = initSupabase();
 
   $("#navTasks").onclick = () => { view = "tasks"; closeSidebar(); render(); };
   $("#navMap").onclick = () => {
@@ -1348,6 +1563,11 @@ function toggleSidebar() {
   };
   $("#navUndo").onclick = undo;
   $("#navRedo").onclick = redo;
+  $("#navAccount").onclick = async () => {
+    if (!session) return;
+    if (!confirm("Sign out of Pagetree?")) return;
+    await sb.auth.signOut();
+  };
   $("#newRootBtn").onclick = () => record(() => {
     const p = newPage("New project", "📁");
     ws.pages.push(p);
@@ -1365,8 +1585,20 @@ function toggleSidebar() {
     else if (e.key === "y" || (e.key === "z" && e.shiftKey) || (e.key === "Z" && e.shiftKey)) { e.preventDefault(); redo(); }
   });
 
-  render();
-  updateUndoButtons();
+  window.addEventListener("online", () => { if (session) queueCloudSave(); });
+
+  if (sb) {
+    sb.auth.onAuthStateChange(async (_event, next) => {
+      session = next;
+      if (session?.user) await startApp();
+      else await handleSignedOut();
+    });
+  } else {
+    ws = normalizeWorkspace((await loadWS()) || defaultWorkspace());
+    currentPageId = ws.pages[0]?.id || null;
+    render();
+    updateUndoButtons();
+  }
 
   if ("serviceWorker" in navigator) {
     try {

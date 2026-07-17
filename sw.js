@@ -1,5 +1,5 @@
-const CACHE = "pagetree-v17";
-const CORE = ["./", "./index.html", "./style.css", "./app.js", "./manifest.json"];
+const CACHE = "pagetree-v18";
+const CORE = ["./", "./index.html", "./style.css", "./app.js", "./config.js", "./manifest.json"];
 const OPTIONAL = ["./icons/icon-192.png", "./icons/icon-512.png"];
 
 self.addEventListener("install", e => {
@@ -27,6 +27,7 @@ function isAppShell(url) {
     p.endsWith("/") ||
     p.endsWith("/index.html") ||
     p.endsWith("/app.js") ||
+    p.endsWith("/config.js") ||
     p.endsWith("/style.css") ||
     p.endsWith("/sw.js") ||
     p.endsWith("/manifest.json")
