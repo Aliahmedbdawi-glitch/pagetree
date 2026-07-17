@@ -107,10 +107,15 @@ function save() {
 
 function initSupabase() {
   const cfg = window.PAGETREE_SUPABASE;
-  if (!cfg?.url || !cfg?.key || !window.supabase) return null;
-  return window.supabase.createClient(cfg.url, cfg.key, {
-    auth: { persistSession: true, autoRefreshToken: true },
-  });
+  if (!cfg?.url || !cfg?.key || !window.supabase?.createClient) return null;
+  try {
+    return window.supabase.createClient(cfg.url, cfg.key, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    });
+  } catch (e) {
+    console.error("Supabase init failed", e);
+    return null;
+  }
 }
 async function cloudFetchWorkspace(userId) {
   const { data, error } = await sb.from("workspaces")
@@ -238,8 +243,12 @@ function showAuthGate(msg) {
   signIn.type = "submit";
   const signUp = el("button", "authbtn", "Create account");
   signUp.type = "button";
+  const offline = el("button", "authbtn", "Continue offline");
+  offline.type = "button";
+  offline.title = "Use this device only — no cloud sync";
   actions.append(signIn, signUp);
   form.append(email, pass, err, actions);
+  offline.onclick = () => startOfflineApp();
   form.onsubmit = async e => {
     e.preventDefault();
     err.hidden = true;
@@ -275,14 +284,35 @@ function showAuthGate(msg) {
     }
   };
   card.append(form);
+  card.append(offline);
   gate.append(card);
 }
 function hideAuthGate() {
   const gate = $("#authGate");
   if (gate) { gate.hidden = true; gate.innerHTML = ""; }
 }
+async function startOfflineApp() {
+  session = null;
+  appUserId = null;
+  cloudReady = false;
+  hideAuthGate();
+  try {
+    ws = normalizeWorkspace((await loadWS()) || defaultWorkspace());
+  } catch {
+    ws = defaultWorkspace();
+  }
+  currentPageId = ws.pages[0]?.id || null;
+  updateAccountButton();
+  setSyncBadge("offline");
+  render();
+  updateUndoButtons();
+}
 async function startApp() {
-  const userId = session.user.id;
+  const userId = session?.user?.id;
+  if (!userId) {
+    showAuthGate("Session expired. Sign in again.");
+    return;
+  }
   if (appUserId === userId && ws) {
     hideAuthGate();
     updateAccountButton();
@@ -291,24 +321,28 @@ async function startApp() {
   }
   appUserId = userId;
   hideAuthGate();
-  ws = normalizeWorkspace(await resolveWorkspace(userId));
-  currentPageId = ws.pages[0]?.id || null;
-  cloudReady = true;
-  updateAccountButton();
-  setSyncBadge("synced");
-  render();
-  updateUndoButtons();
+  try {
+    ws = normalizeWorkspace(await resolveWorkspace(userId));
+    currentPageId = ws.pages[0]?.id || null;
+    cloudReady = true;
+    updateAccountButton();
+    setSyncBadge("synced");
+    render();
+    updateUndoButtons();
+  } catch (e) {
+    console.error("startApp failed", e);
+    showAuthGate(e.message || "Could not load workspace. Try again or continue offline.");
+  }
 }
 async function handleSignedOut() {
   session = null;
   appUserId = null;
   cloudReady = false;
   ws = null;
-  hideAuthGate();
-  showAuthGate();
   $("#main").innerHTML = "";
   updateAccountButton();
   setSyncBadge("offline");
+  showAuthGate();
 }
 
 /* ---------- undo / redo ---------- */
@@ -512,6 +546,245 @@ async function copyPageContent(page) {
     ta.remove();
     return ok;
   }
+}
+
+/* ================= markdown import/export ================= */
+function mdEscapeCell(text) {
+  return String(text ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+function mdChildren(node) {
+  return Array.from(node.childNodes).map(mdNodeToMarkdown).join("");
+}
+function mdNodeToMarkdown(node) {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const tag = node.tagName.toLowerCase();
+  if (tag === "br") return "\n";
+  if (tag === "b" || tag === "strong") return `**${mdChildren(node)}**`;
+  if (tag === "s" || tag === "strike" || tag === "del") return `~~${mdChildren(node)}~~`;
+  if (tag === "ul") {
+    const items = Array.from(node.children).filter(c => c.tagName.toLowerCase() === "li");
+    return items.map(li => `- ${mdChildren(li).trim()}`).join("\n") + (items.length ? "\n\n" : "");
+  }
+  if (tag === "ol") {
+    const items = Array.from(node.children).filter(c => c.tagName.toLowerCase() === "li");
+    return items.map((li, i) => `${i + 1}. ${mdChildren(li).trim()}`).join("\n") + (items.length ? "\n\n" : "");
+  }
+  if (tag === "li") return mdChildren(node).trim();
+  if (tag === "p" || tag === "div") {
+    const inner = mdChildren(node).trim();
+    return inner ? inner + "\n\n" : "";
+  }
+  return mdChildren(node);
+}
+function htmlToMarkdown(html) {
+  const d = document.createElement("div");
+  d.innerHTML = html || "";
+  return mdNodeToMarkdown(d).replace(/\n{3,}/g, "\n\n").trim();
+}
+function pageHeadingMd(page, depth) {
+  const hashes = "#".repeat(Math.min(Math.max(depth, 1), 6));
+  const title = page.icon && page.icon !== "📄" ? `${page.icon} ${page.title}` : page.title;
+  return `${hashes} ${title}`;
+}
+function pageToMarkdown(page, depth) {
+  const lines = [pageHeadingMd(page, depth), ""];
+  for (const b of page.blocks) {
+    if (b.type === "text") {
+      const md = htmlToMarkdown(b.html);
+      if (md) lines.push(md, "");
+    } else if (b.type === "checklist") {
+      for (const it of b.items) lines.push(`- [${it.done ? "x" : " "}] ${it.text || ""}`);
+      if (b.items.length) lines.push("");
+    } else if (b.type === "table") {
+      lines.push("| " + b.columns.map(mdEscapeCell).join(" | ") + " |");
+      lines.push("| " + b.columns.map(() => "---").join(" | ") + " |");
+      for (const row of b.rows) {
+        const padded = b.columns.map((_, i) => mdEscapeCell(row[i]));
+        lines.push("| " + padded.join(" | ") + " |");
+      }
+      lines.push("");
+    } else if (b.type === "page") {
+      const hit = findPage(b.pageId);
+      if (hit) {
+        const childMd = pageToMarkdown(hit.page, depth + 1);
+        if (childMd) lines.push(childMd, "");
+      }
+    }
+  }
+  return lines.join("\n").trimEnd();
+}
+function workspaceToMarkdown(workspace) {
+  const parts = workspace.pages.map(p => pageToMarkdown(p, 1));
+  return parts.join("\n\n").trimEnd() + "\n";
+}
+function downloadMarkdown() {
+  const text = workspaceToMarkdown(ws);
+  const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+  const a = document.createElement("a");
+  const date = new Date().toISOString().slice(0, 10);
+  a.href = URL.createObjectURL(blob);
+  a.download = `pagetree-${date}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function mdEscapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+function markdownInlineToHtml(text) {
+  return mdEscapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/~~(.+?)~~/g, "<s>$1</s>");
+}
+function splitIconTitle(text) {
+  const m = text.match(/^(\p{Extended_Pictographic})\s+(.+)$/u);
+  if (m) return { icon: m[1], title: m[2].trim() };
+  return { icon: "📄", title: text.trim() || "Untitled" };
+}
+function markdownParagraphsToHtml(md) {
+  const parts = md.split(/\n\n+/).map(p => p.trim()).filter(Boolean);
+  return parts.map(part => {
+    const lines = part.split("\n");
+    if (lines.every(l => /^-\s+/.test(l) && !/^-\s+\[/.test(l))) {
+      const items = lines.map(l => l.replace(/^-\s+/, ""));
+      return "<ul>" + items.map(i => `<li>${markdownInlineToHtml(i)}</li>`).join("") + "</ul>";
+    }
+    if (lines.every(l => /^\d+\.\s+/.test(l))) {
+      const items = lines.map(l => l.replace(/^\d+\.\s+/, ""));
+      return "<ol>" + items.map(i => `<li>${markdownInlineToHtml(i)}</li>`).join("") + "</ol>";
+    }
+    return `<p>${markdownInlineToHtml(part.replace(/\n/g, "<br>"))}</p>`;
+  }).join("");
+}
+function parseGfmTableRows(rows) {
+  const cells = rows.map(r => r.replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim().replace(/\\\|/g, "|")));
+  if (cells.length < 2) return null;
+  const columns = cells[0];
+  const dataRows = cells.slice(2);
+  return { id: uid(), type: "table", columns, rows: dataRows };
+}
+function markdownToPages(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const roots = [];
+  const stack = [];
+  let currentBlocks = null;
+  let checklistBuf = null;
+  let textBuf = [];
+  let tableBuf = null;
+
+  function flushText() {
+    if (!textBuf.length) return;
+    const md = textBuf.join("\n").trim();
+    if (md && currentBlocks) currentBlocks.push({ id: uid(), type: "text", html: markdownParagraphsToHtml(md) });
+    textBuf = [];
+  }
+  function flushChecklist() {
+    if (!checklistBuf?.length) { checklistBuf = null; return; }
+    if (currentBlocks) currentBlocks.push({ id: uid(), type: "checklist", items: checklistBuf });
+    checklistBuf = null;
+  }
+  function flushTable() {
+    if (!tableBuf?.length) { tableBuf = null; return; }
+    const table = parseGfmTableRows(tableBuf);
+    if (table && currentBlocks) currentBlocks.push(table);
+    tableBuf = null;
+  }
+  function flushAll() {
+    flushText();
+    flushChecklist();
+    flushTable();
+  }
+  function setCurrentPage(page) {
+    flushAll();
+    currentBlocks = page.blocks;
+  }
+  function pushPage(page, depth) {
+    while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
+    if (depth === 1) {
+      roots.push(page);
+      stack.push({ page, depth });
+    } else {
+      const parent = stack[stack.length - 1]?.page;
+      if (!parent) {
+        roots.push(page);
+        stack.length = 0;
+        stack.push({ page, depth: 1 });
+      } else {
+        parent.children.push(page);
+        parent.blocks.push({ id: uid(), type: "page", pageId: page.id });
+        stack.push({ page, depth });
+      }
+    }
+    setCurrentPage(page);
+  }
+
+  for (const line of lines) {
+    const hm = line.match(/^(#{1,6})\s+(.+)$/);
+    if (hm) {
+      const depth = hm[1].length;
+      const { icon, title } = splitIconTitle(hm[2].trim());
+      pushPage(newPage(title, icon), depth);
+      continue;
+    }
+    if (!currentBlocks) continue;
+
+    const trimmed = line.trim();
+    if (/^\|.+\|$/.test(trimmed)) {
+      flushText();
+      flushChecklist();
+      if (!tableBuf) tableBuf = [];
+      tableBuf.push(trimmed);
+      continue;
+    }
+    if (tableBuf) flushTable();
+
+    const cm = line.match(/^-\s+\[([ xX])\]\s*(.*)$/);
+    if (cm) {
+      flushText();
+      flushTable();
+      if (!checklistBuf) checklistBuf = [];
+      checklistBuf.push({ id: uid(), text: cm[2], done: cm[1].toLowerCase() === "x" });
+      continue;
+    }
+    if (checklistBuf) flushChecklist();
+
+    if (!trimmed) {
+      flushText();
+      continue;
+    }
+    textBuf.push(line);
+  }
+  flushAll();
+  return roots;
+}
+function importMarkdownFile() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = ".md,text/markdown,text/plain";
+  inp.onchange = () => {
+    const file = inp.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const roots = markdownToPages(reader.result);
+      if (!roots.length) {
+        alert("No projects found in file. Use # headings for root projects.");
+        return;
+      }
+      const firstId = roots[0].id;
+      record(() => {
+        for (const p of roots) ws.pages.push(p);
+        currentPageId = firstId;
+        view = "page";
+      });
+    };
+    reader.onerror = () => alert("Could not read file.");
+    reader.readAsText(file);
+  };
+  inp.click();
 }
 
 /* ================= sidebar tree ================= */
@@ -1535,10 +1808,13 @@ function renderEmpty(main) {
 
 /* ================= shell ================= */
 function render() {
+  if (!ws) return;
   renderTree();
-  $("#navTasks").classList.toggle("active", view === "tasks");
-  $("#navMap").classList.toggle("active", view === "map");
+  const navTasks = $("#navTasks"), navMap = $("#navMap");
+  if (navTasks) navTasks.classList.toggle("active", view === "tasks");
+  if (navMap) navMap.classList.toggle("active", view === "map");
   const main = $("#main");
+  if (!main) return;
   main.className = view === "map" ? "mmap-main" : "";
   main.innerHTML = "";
   if (view === "tasks") renderTasks(main);
@@ -1567,62 +1843,89 @@ function toggleSidebar() {
 
 /* ---------- boot ---------- */
 (async function boot() {
-  sb = initSupabase();
+  try {
+    sb = initSupabase();
 
-  $("#navTasks").onclick = () => { view = "tasks"; closeSidebar(); render(); };
-  $("#navMap").onclick = () => {
-    view = "map";
-    mapZoomAuto = true;
-    mapScopeId = currentPageId || null;
-    closeSidebar();
-    render();
-  };
-  $("#navUndo").onclick = undo;
-  $("#navRedo").onclick = redo;
-  $("#navAccount").onclick = async () => {
-    if (!session) return;
-    if (!confirm("Sign out of Pagetree?")) return;
-    await sb.auth.signOut();
-  };
-  $("#newRootBtn").onclick = () => record(() => {
-    const p = newPage("New project", "📁");
-    ws.pages.push(p);
-    currentPageId = p.id;
-    view = "page";
-  });
-  $("#menuBtn").onclick = toggleSidebar;
-  $("#scrim").onclick = closeSidebar;
-  $("#menuBtn").setAttribute("aria-expanded", "false");
-  $("#brand").onclick = () => { view = "map"; mapZoomAuto = true; mapScopeId = null; render(); };
+    const on = (id, fn) => {
+      const node = document.getElementById(id);
+      if (node) node.onclick = fn;
+    };
 
-  document.addEventListener("keydown", e => {
-    if (!(e.ctrlKey || e.metaKey)) return;
-    if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-    else if (e.key === "y" || (e.key === "z" && e.shiftKey) || (e.key === "Z" && e.shiftKey)) { e.preventDefault(); redo(); }
-  });
-
-  window.addEventListener("online", () => { if (session) queueCloudSave(); });
-
-  if (sb) {
-    sb.auth.onAuthStateChange(async (_event, next) => {
-      session = next;
-      if (session?.user) await startApp();
-      else await handleSignedOut();
+    on("navTasks", () => { view = "tasks"; closeSidebar(); render(); });
+    on("navMap", () => {
+      view = "map";
+      mapZoomAuto = true;
+      mapScopeId = currentPageId || null;
+      closeSidebar();
+      render();
     });
-  } else {
-    ws = normalizeWorkspace((await loadWS()) || defaultWorkspace());
-    currentPageId = ws.pages[0]?.id || null;
-    render();
-    updateUndoButtons();
-  }
+    on("navUndo", undo);
+    on("navRedo", redo);
+    on("navAccount", async () => {
+      if (!session) return;
+      if (!confirm("Sign out of Pagetree?")) return;
+      try { await sb?.auth.signOut(); } catch (e) { console.warn(e); }
+      await handleSignedOut();
+    });
+    on("newRootBtn", () => record(() => {
+      const p = newPage("New project", "📁");
+      ws.pages.push(p);
+      currentPageId = p.id;
+      view = "page";
+    }));
+    on("exportMdBtn", () => downloadMarkdown());
+    on("importMdBtn", () => importMarkdownFile());
+    on("menuBtn", toggleSidebar);
+    on("scrim", closeSidebar);
+    const menuBtn = $("#menuBtn");
+    if (menuBtn) menuBtn.setAttribute("aria-expanded", "false");
+    on("brand", () => { view = "map"; mapZoomAuto = true; mapScopeId = null; render(); });
 
-  if ("serviceWorker" in navigator) {
-    try {
-      const reg = await navigator.serviceWorker.register("sw.js");
-      reg.update().catch(() => {});
-      navigator.serviceWorker.addEventListener("message", ev => {
-        if (ev.data?.type === "pagetree-updated") location.reload();
+    document.addEventListener("keydown", e => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if (e.key === "y" || (e.key === "z" && e.shiftKey) || (e.key === "Z" && e.shiftKey)) { e.preventDefault(); redo(); }
+    });
+
+    window.addEventListener("online", () => { if (session) queueCloudSave(); });
+
+    if (sb) {
+      // Show gate immediately so the page is never blank while auth resolves.
+      showAuthGate();
+      sb.auth.onAuthStateChange(async (_event, next) => {
+        session = next;
+        try {
+          if (session?.user) await startApp();
+          else await handleSignedOut();
+        } catch (e) {
+          console.error("auth state handler failed", e);
+          showAuthGate(e.message || "Auth error. Continue offline or try again.");
+        }
       });
-    } catch (e) { console.warn("SW failed", e); }
+      try {
+        const { data } = await sb.auth.getSession();
+        session = data.session;
+        if (session?.user) await startApp();
+      } catch (e) {
+        console.warn("getSession failed", e);
+      }
+    } else {
+      await startOfflineApp();
+    }
+
+    if ("serviceWorker" in navigator) {
+      try {
+        const reg = await navigator.serviceWorker.register("sw.js");
+        reg.update().catch(() => {});
+        navigator.serviceWorker.addEventListener("message", ev => {
+          if (ev.data?.type === "pagetree-updated") location.reload();
+        });
+      } catch (e) { console.warn("SW failed", e); }
+    }
+  } catch (e) {
+    console.error("boot failed", e);
+    try { await startOfflineApp(); } catch (_) {
+      showAuthGate("App failed to start. Refresh the page.");
+    }
   }
 })();

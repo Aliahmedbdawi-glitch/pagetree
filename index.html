@@ -9,11 +9,11 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="style.css?v=19">
+<link rel="stylesheet" href="style.css?v=21">
 <script>
 /* One-shot purge of stale PWA caches that kept the blank mindmap bug alive. */
 (function () {
-  var KEY = "pagetree-purged-v16";
+  var KEY = "pagetree-purged-v21";
   try {
     if (localStorage.getItem(KEY)) return;
     localStorage.setItem(KEY, "1");
@@ -51,7 +51,11 @@
 
   <aside id="sidebar">
     <div id="tree"></div>
-    <button id="newRootBtn" class="ghostbtn">＋ New project</button>
+    <div id="sidebarActions">
+      <button id="newRootBtn" class="ghostbtn">＋ New project</button>
+      <button id="exportMdBtn" class="ghostbtn" title="Export workspace as Markdown">↓ Export MD</button>
+      <button id="importMdBtn" class="ghostbtn" title="Import Markdown as new project(s)">↑ Import MD</button>
+    </div>
   </aside>
   <div id="scrim"></div>
 
@@ -61,6 +65,6 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.js"></script>
 <script src="config.js?v=1"></script>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>

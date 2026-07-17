@@ -87,6 +87,8 @@ input, textarea { font: inherit; color: inherit; }
 .noderow:hover .nodeadd { opacity: 1; }
 .ghostbtn { margin: 10px 6px 0; padding: 8px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--ink-soft); text-align: center; }
 .ghostbtn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+#sidebarActions { margin-top: 10px; padding: 0 6px 10px; display: flex; flex-direction: column; gap: 6px; }
+#sidebarActions .ghostbtn { margin: 0; }
 
 /* ---------- main ---------- */
 #main {
@@ -392,6 +394,10 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 .authbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .authbtn:hover:not(:disabled) { filter: brightness(1.03); }
 .authbtn:disabled { opacity: .5; cursor: default; }
+.authcard > .authbtn {
+  width: 100%;
+  margin-top: 10px;
+}
 .autherr { margin: 0; font-size: .85rem; color: var(--danger); }
 .autherr.ok { color: var(--accent); }
 .syncbadge {
