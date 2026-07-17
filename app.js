@@ -543,12 +543,6 @@ function findParentList(id) {
   return list;
 }
 
-function removePageLinksTo(pageId) {
-  walk(ws.pages, (p) => {
-    p.blocks = p.blocks.filter(b => !(b.type === "page" && b.pageId === pageId));
-  });
-}
-
 function collectSubtreeIds(page) {
   const ids = [page.id];
   for (const child of page.children) ids.push(...collectSubtreeIds(child));
