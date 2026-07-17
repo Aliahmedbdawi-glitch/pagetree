@@ -549,6 +549,66 @@ function removePageLinksTo(pageId) {
   });
 }
 
+function collectSubtreeIds(page) {
+  const ids = [page.id];
+  for (const child of page.children) ids.push(...collectSubtreeIds(child));
+  return ids;
+}
+
+function countSubtreePages(page) {
+  let n = 1;
+  for (const child of page.children) n += countSubtreePages(child);
+  return n;
+}
+
+function removeLinksToPages(pageIds) {
+  const set = new Set(pageIds);
+  walk(ws.pages, (p) => {
+    p.blocks = p.blocks.filter(b => !(b.type === "page" && set.has(b.pageId)));
+  });
+}
+
+function deletePageSubtree(pageId) {
+  const hit = findPage(pageId);
+  if (!hit) return false;
+  const { page, path } = hit;
+  const ids = collectSubtreeIds(page);
+  const idSet = new Set(ids);
+  const taskIds = [];
+  const collectTasks = (p) => {
+    for (const b of p.blocks) {
+      if (b.type === "checklist") for (const it of b.items) taskIds.push(it.id);
+    }
+    for (const c of p.children) collectTasks(c);
+  };
+  collectTasks(page);
+  removeLinksToPages(ids);
+  for (const id of ids) delete ws.expanded[id];
+  const taskIdSet = new Set(taskIds);
+  ws.taskOrder = ws.taskOrder.filter(id => !taskIdSet.has(id));
+  const list = findParentList(pageId);
+  const idx = list.findIndex(p => p.id === pageId);
+  if (idx < 0) return false;
+  list.splice(idx, 1);
+  if (idSet.has(currentPageId)) {
+    currentPageId = path.length ? path[path.length - 1].id : (ws.pages[0] && ws.pages[0].id) || null;
+    if (!currentPageId) view = "map";
+  }
+  if (mapScopeId && idSet.has(mapScopeId)) mapScopeId = null;
+  if (mapRenameId && idSet.has(mapRenameId)) mapRenameId = null;
+  return true;
+}
+
+function confirmAndDeletePage(page) {
+  const count = countSubtreePages(page);
+  const label = `${page.icon} ${page.title || "Untitled"}`.trim();
+  const msg = count > 1
+    ? `Delete "${label}" and ${count - 1} sub-page${count - 1 === 1 ? "" : "s"}? This cannot be undone.`
+    : `Delete "${label}"? This cannot be undone.`;
+  if (!confirm(msg)) return;
+  record(() => deletePageSubtree(page.id));
+}
+
 function addSubPage(parent, { title, afterBlockIndex, atIndex, noSave } = {}) {
   const child = newPage(title || "Untitled");
   parent.children.push(child);
@@ -904,7 +964,14 @@ function renderTree() {
       });
       closeSidebar();
     };
-    row.append(tw, label, add);
+    const del = el("button", "nodedel", "✕");
+    del.title = "Delete page and sub-pages";
+    del.onclick = e => {
+      e.stopPropagation();
+      confirmAndDeletePage(page);
+      closeSidebar();
+    };
+    row.append(tw, label, add, del);
     row.onclick = () => openPage(page.id);
     row.onkeydown = e => { if (e.key === "Enter") openPage(page.id); };
     wrap.append(row);
@@ -1128,7 +1195,6 @@ function buildColorMenu() {
     s.onmousedown = e => e.preventDefault();
     s.onclick = () => {
       menu.hidden = true;
-      dot.style.background = c;
       applyFormat(() => document.execCommand("foreColor", false, c));
     };
     menu.append(s);
@@ -1206,15 +1272,9 @@ function buildDocToolbar(page, path) {
       alert("Could not copy to clipboard.");
     }
   };
-  const del = el("button", "tbtn tbtn-danger", "Delete");
-  del.title = "Delete page";
-  del.onclick = () => record(() => {
-    removePageLinksTo(page.id);
-    const list = findParentList(page.id);
-    list.splice(list.findIndex(p => p.id === page.id), 1);
-    currentPageId = path.length ? path[path.length - 1].id : (ws.pages[0] && ws.pages[0].id);
-    if (!currentPageId) view = "map";
-  });
+  const del = el("button", "tbtn tbtn-danger", "Delete page");
+  del.title = "Delete page and all sub-pages";
+  del.onclick = () => confirmAndDeletePage(page);
   pageActs.append(addSub, copyBtn, del);
 
   bar.append(insert, fmt, blockActs, pageActs);
@@ -1810,6 +1870,15 @@ function buildMapNode(n) {
     };
     wrap.append(rename);
   }
+
+  const del = el("button", "mmap-del", "✕");
+  del.title = "Delete page and sub-pages";
+  del.setAttribute("aria-label", "Delete page");
+  del.onclick = e => {
+    e.stopPropagation();
+    confirmAndDeletePage(n.page);
+  };
+  wrap.append(del);
 
   const add = el("button", "mmap-add", "＋");
   add.title = "Add sub-page";

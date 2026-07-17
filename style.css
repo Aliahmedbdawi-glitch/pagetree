@@ -84,7 +84,9 @@ input, textarea { font: inherit; color: inherit; }
 .nodelabel { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .nodekids { margin-left: 14px; border-left: 1px dashed var(--line); padding-left: 4px; }
 .nodeadd { opacity: 0; font-size: .8rem; color: var(--ink-soft); flex: none; }
-.noderow:hover .nodeadd { opacity: 1; }
+.nodedel { opacity: 0; font-size: .8rem; color: var(--ink-soft); flex: none; }
+.noderow:hover .nodeadd, .noderow:hover .nodedel { opacity: 1; }
+.nodedel:hover { color: var(--danger); }
 .ghostbtn { margin: 10px 6px 0; padding: 8px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--ink-soft); text-align: center; }
 .ghostbtn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 #sidebarActions { margin-top: 10px; padding: 0 6px 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -384,6 +386,8 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 .mmap-name:hover { color: var(--accent); opacity: 1; background: var(--wash); }
 .mmap-add { flex: none; width: 24px; height: 24px; padding: 0; font-size: .85rem; color: var(--ink-soft); border-radius: 6px; border: 1px dashed var(--line); background: transparent; }
 .mmap-add:hover { color: var(--accent); border-color: var(--accent); background: var(--wash); }
+.mmap-del { flex: none; width: 24px; height: 24px; padding: 0; font-size: .75rem; color: var(--ink-soft); border-radius: 6px; border: 1px solid var(--line); background: transparent; }
+.mmap-del:hover { color: var(--danger); border-color: var(--danger); background: #FBEDEA; }
 .mmap-rename { flex: none; padding: 7px 10px; border: 1px solid var(--accent); border-radius: 8px; font: inherit; font-size: .9rem; background: var(--surface); }
 .mmap-empty { color: var(--ink-soft); text-align: center; margin-top: 10vh; }
 .mmap-empty .big { font-size: 3rem; }
@@ -494,6 +498,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   .mmap-twisty { width: 36px; height: 36px; font-size: .9rem; }
   .mmap-name { width: 36px; height: 36px; font-size: .85rem; opacity: 1; border: 1px solid var(--line); border-radius: 8px; }
   .mmap-add { width: 36px; height: 36px; font-size: 1rem; }
+  .mmap-del { width: 36px; height: 36px; font-size: .85rem; }
   .mmap-open { padding: 10px 12px; min-height: 44px; }
 
   /* page editor */
