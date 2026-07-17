@@ -217,6 +217,22 @@ function showAuthGate(msg) {
   pass.autocomplete = "current-password";
   const err = el("p", "autherr");
   if (msg) { err.textContent = msg; err.hidden = false; } else err.hidden = true;
+  const readCreds = () => {
+    const em = email.value.trim();
+    const pw = pass.value;
+    if (!em) throw new Error("Enter your email address.");
+    if (!pw || pw.length < 6) throw new Error("Password must be at least 6 characters.");
+    return { email: em, password: pw };
+  };
+  const authErr = ex => {
+    if (ex?.message?.includes("Anonymous sign-ins")) {
+      return "Enter a valid email and password (6+ characters).";
+    }
+    if (ex?.message?.includes("email_provider_disabled") || ex?.code === "email_provider_disabled") {
+      return "Email sign-in is disabled in Supabase. Enable Email under Auth → Providers.";
+    }
+    return ex?.message || "Request failed";
+  };
   const actions = el("div", "authactions");
   const signIn = el("button", "authbtn primary", "Sign in");
   signIn.type = "submit";
@@ -229,11 +245,13 @@ function showAuthGate(msg) {
     err.hidden = true;
     signIn.disabled = signUp.disabled = true;
     try {
-      const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pass.value });
+      const creds = readCreds();
+      const { error } = await sb.auth.signInWithPassword(creds);
       if (error) throw error;
     } catch (ex) {
-      err.textContent = ex.message || "Sign in failed";
+      err.textContent = authErr(ex);
       err.hidden = false;
+      err.classList.remove("ok");
     } finally {
       signIn.disabled = signUp.disabled = false;
     }
@@ -242,16 +260,14 @@ function showAuthGate(msg) {
     err.hidden = true;
     signIn.disabled = signUp.disabled = true;
     try {
-      const { error } = await sb.auth.signUp({
-        email: email.value.trim(),
-        password: pass.value,
-      });
+      const creds = readCreds();
+      const { error } = await sb.auth.signUp(creds);
       if (error) throw error;
       err.textContent = "Account created. Check your email if confirmation is required, then sign in.";
       err.hidden = false;
       err.classList.add("ok");
     } catch (ex) {
-      err.textContent = ex.message || "Sign up failed";
+      err.textContent = authErr(ex);
       err.hidden = false;
       err.classList.remove("ok");
     } finally {
