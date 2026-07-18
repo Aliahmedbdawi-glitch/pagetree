@@ -1,4 +1,4 @@
-const CACHE = "pagetree-v25";
+const CACHE = "pagetree-v26";
 const CORE = ["./", "./index.html", "./style.css", "./app.js", "./config.js", "./manifest.json"];
 const OPTIONAL = ["./icons/icon-192.png", "./icons/icon-512.png"];
 

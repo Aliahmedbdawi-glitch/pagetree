@@ -486,6 +486,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 .mmap-tbbtn:disabled { opacity: .45; cursor: default; }
 .mmap-tbbtn-danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); background: #FBEDEA; }
 .mmap-tbcolors { position: relative; }
+.mmap-swatches[hidden] { display: none !important; }
 .mmap-swatches {
   position: absolute;
   top: calc(100% + 6px);
