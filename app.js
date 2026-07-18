@@ -547,6 +547,110 @@ function findParentList(id) {
   return list;
 }
 
+function findParentId(pageId) {
+  if (ws.pages.some(p => p.id === pageId)) return null;
+  let pid = null;
+  walk(ws.pages, p => {
+    if (p.children.some(c => c.id === pageId)) { pid = p.id; return false; }
+  });
+  return pid;
+}
+
+function movePages(ids, { parentId, index }) {
+  if (!ids?.length) return false;
+  const idSet = new Set(ids);
+
+  const forbidden = new Set();
+  for (const id of ids) {
+    const hit = findPage(id);
+    if (!hit) return false;
+    for (const subId of collectSubtreeIds(hit.page)) forbidden.add(subId);
+  }
+  if (parentId != null && forbidden.has(parentId)) return false;
+
+  const pagesToMove = [];
+  function walkCollect(pages) {
+    for (const p of pages) {
+      if (idSet.has(p.id)) pagesToMove.push(p);
+      walkCollect(p.children);
+    }
+  }
+  walkCollect(ws.pages);
+  if (!pagesToMove.length) return false;
+
+  const removals = pagesToMove.map(p => {
+    const list = findParentList(p.id);
+    return { page: p, list, idx: list.indexOf(p), parentId: findParentId(p.id) };
+  });
+
+  const byList = new Map();
+  for (const r of removals) {
+    if (!byList.has(r.list)) byList.set(r.list, []);
+    byList.get(r.list).push(r);
+  }
+  for (const [, group] of byList) {
+    group.sort((a, b) => b.idx - a.idx);
+    for (const { list, idx } of group) list.splice(idx, 1);
+  }
+
+  const targetList = parentId == null ? ws.pages : findPage(parentId)?.page?.children;
+  if (!targetList) return false;
+  if (parentId != null) ws.expanded[parentId] = true;
+
+  let insertAt = Math.max(0, Math.min(index, targetList.length));
+  for (const r of removals) {
+    const sameTarget = (r.parentId === parentId) || (r.parentId == null && parentId == null);
+    if (sameTarget && r.idx < insertAt) insertAt--;
+  }
+  insertAt = Math.max(0, Math.min(insertAt, targetList.length));
+  targetList.splice(insertAt, 0, ...pagesToMove);
+  return true;
+}
+
+function clearMapSelection() {
+  mapSelectedIds.clear();
+  mapSelectMode = false;
+}
+
+function mmSyncSelectionBar() {
+  const main = $("#main");
+  if (!main || view !== "map") return;
+  let bar = $("#mmSelBar");
+  if (!mapSelectedIds.size) {
+    if (bar) bar.remove();
+    mapSelectMode = false;
+  } else {
+    if (!bar) main.append(mmBuildSelectionBar());
+    else {
+      const count = bar.querySelector(".mmap-selcount");
+      if (count) count.textContent = `${mapSelectedIds.size} selected`;
+    }
+  }
+  document.querySelectorAll(".mmap-node").forEach(node => {
+    const id = node.dataset.pageId;
+    node.classList.toggle("selected", mapSelectedIds.has(id));
+  });
+}
+
+function mmToggleSelect(pageId, forceOn) {
+  if (forceOn) mapSelectedIds.add(pageId);
+  else if (mapSelectedIds.has(pageId)) mapSelectedIds.delete(pageId);
+  else mapSelectedIds.add(pageId);
+  if (!mapSelectedIds.size) mapSelectMode = false;
+  mmSyncSelectionBar();
+}
+
+function mmApplyNodeColor(pageIds, color) {
+  record(() => {
+    for (const id of pageIds) {
+      const hit = findPage(id);
+      if (!hit) continue;
+      if (color) hit.page.color = color;
+      else delete hit.page.color;
+    }
+  });
+}
+
 function collectSubtreeIds(page) {
   const ids = [page.id];
   for (const child of page.children) ids.push(...collectSubtreeIds(child));
@@ -594,6 +698,7 @@ function deletePageSubtree(pageId) {
   }
   if (mapScopeId && idSet.has(mapScopeId)) mapScopeId = null;
   if (mapRenameId && idSet.has(mapRenameId)) mapRenameId = null;
+  for (const id of ids) mapSelectedIds.delete(id);
   return true;
 }
 
@@ -987,6 +1092,7 @@ function renderTree() {
 function openPage(id) {
   currentPageId = id; view = "page";
   mapRenameId = null;
+  clearMapSelection();
   selectedBlockId = null;
   closeSidebar();
   render();
@@ -1161,6 +1267,11 @@ function buildAddBlockMenu(page) {
     e.stopPropagation();
     const opening = menu.hidden;
     document.querySelectorAll(".addmenu").forEach(m => { m.hidden = true; });
+    document.querySelectorAll(".colormenu").forEach(m => { m.hidden = true; });
+    document.querySelectorAll(".color-trigger").forEach(b => {
+      b.setAttribute("aria-expanded", "false");
+      b.classList.remove("open");
+    });
     menu.hidden = !opening;
     if (!menu.hidden) {
       setTimeout(() => {
@@ -1182,17 +1293,24 @@ function buildColorMenu() {
   const btn = el("button", "tbtn color-trigger");
   btn.title = "Text color";
   btn.setAttribute("aria-label", "Text color");
+  btn.setAttribute("aria-expanded", "false");
+  btn.setAttribute("aria-haspopup", "true");
   const dot = el("span", "color-trigger-dot");
   btn.append(dot);
   const menu = el("div", "colormenu");
   menu.hidden = true;
+  const setOpen = open => {
+    menu.hidden = !open;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.classList.toggle("open", open);
+  };
   for (const c of TEXT_COLORS) {
     const s = el("button", "colormenu-swatch");
     s.style.background = c;
     s.title = "Text color";
     s.onmousedown = e => e.preventDefault();
     s.onclick = () => {
-      menu.hidden = true;
+      setOpen(false);
       applyFormat(() => document.execCommand("foreColor", false, c));
     };
     menu.append(s);
@@ -1201,11 +1319,19 @@ function buildColorMenu() {
     e.stopPropagation();
     const opening = menu.hidden;
     document.querySelectorAll(".colormenu").forEach(m => { m.hidden = true; });
-    menu.hidden = !opening;
-    if (!menu.hidden) {
+    document.querySelectorAll(".color-trigger").forEach(b => {
+      b.setAttribute("aria-expanded", "false");
+      b.classList.remove("open");
+    });
+    document.querySelectorAll(".addmenu").forEach(m => { m.hidden = true; });
+    setOpen(opening);
+    if (opening) {
       setTimeout(() => {
         const close = ev => {
-          if (!wrap.contains(ev.target)) { menu.hidden = true; document.removeEventListener("click", close); }
+          if (!wrap.contains(ev.target)) {
+            setOpen(false);
+            document.removeEventListener("click", close);
+          }
         };
         document.addEventListener("click", close);
       }, 0);
@@ -1819,8 +1945,296 @@ function finishMapRename(page, title) {
   render();
 }
 
+function mmGetCurrentScale() {
+  const pan = $("#mmPan");
+  if (!pan || !mapLayout) return 1;
+  return mmActiveScale(pan, mapLayout.width, mapLayout.height);
+}
+
+function mmClientToCanvas(clientX, clientY) {
+  const scaler = $("#mmScaler");
+  if (!scaler) return null;
+  const rect = scaler.getBoundingClientRect();
+  const scale = mmGetCurrentScale();
+  return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
+}
+
+function mmDragIdsFor(pageId) {
+  if (mapSelectedIds.has(pageId) && mapSelectedIds.size) return [...mapSelectedIds];
+  return [pageId];
+}
+
+function mmForbiddenDropSet(dragIds) {
+  const forbidden = new Set();
+  for (const id of dragIds) {
+    const hit = findPage(id);
+    if (hit) for (const subId of collectSubtreeIds(hit.page)) forbidden.add(subId);
+  }
+  return forbidden;
+}
+
+function mmHitTestDrop(canvasPt, dragIds) {
+  if (!canvasPt || !mapLayoutNodes.length) return null;
+  const forbidden = mmForbiddenDropSet(dragIds);
+  const nh = mmNodeH();
+  let hit = null;
+  for (const n of mapLayoutNodes) {
+    const top = n.y - nh / 2;
+    const left = n.x;
+    const right = n.x + n.rowW;
+    const bottom = n.y + nh / 2;
+    if (canvasPt.x >= left && canvasPt.x <= right && canvasPt.y >= top && canvasPt.y <= bottom) hit = n;
+  }
+  if (!hit) return null;
+  if (forbidden.has(hit.page.id)) return { invalid: true };
+
+  const parentList = findParentList(hit.page.id);
+  const idxInParent = parentList.findIndex(p => p.id === hit.page.id);
+  const parentId = parentList === ws.pages ? null : findParentId(hit.page.id);
+  const relY = (canvasPt.y - (hit.y - nh / 2)) / nh;
+
+  if (relY < 0.28) {
+    return { parentId, index: idxInParent, type: "reorder", node: hit };
+  }
+  if (relY > 0.72) {
+    return { parentId, index: idxInParent + 1, type: "reorder", node: hit };
+  }
+  return { parentId: hit.page.id, index: hit.page.children.length, type: "reparent", node: hit };
+}
+
+function mmUpdateDropUI(drop) {
+  document.querySelectorAll(".mmap-node.drop-target").forEach(n => n.classList.remove("drop-target"));
+  document.querySelectorAll(".mmap-node.drop-before, .mmap-node.drop-after").forEach(n => {
+    n.classList.remove("drop-before", "drop-after");
+  });
+  const line = $("#mmDropLine");
+  if (line) line.hidden = true;
+  if (!drop || drop.invalid) return;
+
+  if (drop.type === "reparent" && drop.node) {
+    const el = document.querySelector(`.mmap-node[data-page-id="${drop.node.page.id}"]`);
+    if (el) el.classList.add("drop-target");
+    return;
+  }
+  if (drop.node && line) {
+    const parentList = findParentList(drop.node.page.id);
+    const idxInParent = parentList.findIndex(p => p.id === drop.node.page.id);
+    const isAfter = drop.index > idxInParent;
+    const el = document.querySelector(`.mmap-node[data-page-id="${drop.node.page.id}"]`);
+    if (el) el.classList.add(isAfter ? "drop-after" : "drop-before");
+    const nh = mmNodeH();
+    const y = isAfter ? drop.node.y + nh / 2 : drop.node.y - nh / 2;
+    const scale = mmGetCurrentScale();
+    const scaler = $("#mmScaler");
+    if (scaler) {
+      const rect = scaler.getBoundingClientRect();
+      line.style.left = rect.left + drop.node.x * scale + "px";
+      line.style.top = rect.top + y * scale + "px";
+      line.style.width = Math.max(40, drop.node.rowW * scale) + "px";
+      line.hidden = false;
+    }
+  }
+}
+
+function mmRemoveDragUI() {
+  const ghost = $("#mmDragGhost");
+  if (ghost) ghost.remove();
+  mmUpdateDropUI(null);
+  mapDrag = null;
+}
+
+function mmDragStart(pageId, e) {
+  const ids = mmDragIdsFor(pageId);
+  const hit = findPage(pageId);
+  if (!hit) return;
+  mapDrag = {
+    ids,
+    label: ids.length > 1 ? `${ids.length} pages` : `${hit.page.icon} ${hit.page.title || "Untitled"}`,
+    drop: null,
+  };
+  let ghost = $("#mmDragGhost");
+  if (!ghost) {
+    ghost = el("div", "mmap-dragghost");
+    ghost.id = "mmDragGhost";
+    document.body.append(ghost);
+  }
+  ghost.textContent = mapDrag.label;
+  ghost.hidden = false;
+  mmDragMove(e);
+}
+
+function mmDragMove(e) {
+  if (!mapDrag) return;
+  const ghost = $("#mmDragGhost");
+  if (ghost) {
+    ghost.style.left = e.clientX + 12 + "px";
+    ghost.style.top = e.clientY + 12 + "px";
+  }
+  const pt = mmClientToCanvas(e.clientX, e.clientY);
+  mapDrag.drop = pt ? mmHitTestDrop(pt, mapDrag.ids) : null;
+  mmUpdateDropUI(mapDrag.drop);
+}
+
+function mmDragEnd(e) {
+  if (!mapDrag) return;
+  const pt = mmClientToCanvas(e.clientX, e.clientY);
+  const drop = pt ? mmHitTestDrop(pt, mapDrag.ids) : null;
+  const ids = mapDrag.ids;
+  mmRemoveDragUI();
+  if (!drop || drop.invalid) return;
+  record(() => movePages(ids, { parentId: drop.parentId, index: drop.index }));
+}
+
+function mmAttachNodePointer(wrap, page) {
+  const openBtn = wrap.querySelector(".mmap-open");
+  if (!openBtn) return;
+
+  let pressTimer = null;
+  let dragStarted = false;
+  let startX = 0;
+  let startY = 0;
+  let activePointer = null;
+
+  const clearPress = () => {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  };
+
+  openBtn.addEventListener("pointerdown", e => {
+    if (mapRenameId) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    activePointer = e.pointerId;
+    startX = e.clientX;
+    startY = e.clientY;
+    dragStarted = false;
+
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      mmToggleSelect(page.id);
+      activePointer = null;
+      return;
+    }
+
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      if (!dragStarted && activePointer != null) {
+        navigator.vibrate?.(12);
+        mapSelectMode = true;
+        mapSelectedIds.add(page.id);
+        wrap.classList.add("selected");
+        mmSyncSelectionBar();
+      }
+    }, 350);
+
+    try { openBtn.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  openBtn.addEventListener("pointermove", e => {
+    if (e.pointerId !== activePointer) return;
+    if (mapDrag) {
+      e.preventDefault();
+      mmDragMove(e);
+      return;
+    }
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (Math.hypot(dx, dy) > 10) {
+      clearPress();
+      dragStarted = true;
+      e.preventDefault();
+      mmDragStart(page.id, e);
+    }
+  });
+
+  const finishPointer = e => {
+    if (e.pointerId !== activePointer) return;
+    clearPress();
+    try { openBtn.releasePointerCapture(e.pointerId); } catch (_) {}
+
+    if (dragStarted || mapDrag) {
+      mmDragEnd(e);
+      dragStarted = false;
+      activePointer = null;
+      return;
+    }
+
+    if (mapSelectMode) {
+      mmToggleSelect(page.id);
+    } else {
+      openPage(page.id);
+    }
+    activePointer = null;
+  };
+
+  openBtn.addEventListener("pointerup", finishPointer);
+  openBtn.addEventListener("pointercancel", e => {
+    clearPress();
+    mmRemoveDragUI();
+    dragStarted = false;
+    activePointer = null;
+  });
+}
+
+function mmBuildSelectionBar() {
+  const bar = el("div", "mmap-selbar");
+  bar.id = "mmSelBar";
+  const count = el("span", "mmap-selcount", `${mapSelectedIds.size} selected`);
+  const clearBtn = el("button", "mmap-selbtn", "Clear");
+  clearBtn.onclick = () => { clearMapSelection(); mmSyncSelectionBar(); };
+
+  const colorWrap = el("div", "mmap-selcolors");
+  const colorBtn = el("button", "mmap-selbtn", "Color");
+  const swatches = el("div", "mmap-swatches");
+  swatches.hidden = true;
+  for (const c of TEXT_COLORS) {
+    const s = el("button", "mmap-swatch");
+    s.style.background = c;
+    s.title = "Set color";
+    s.onclick = () => {
+      swatches.hidden = true;
+      mmApplyNodeColor([...mapSelectedIds], c);
+    };
+    swatches.append(s);
+  }
+  const clearColor = el("button", "mmap-swatch mmap-swatch-clear", "×");
+  clearColor.title = "Remove color";
+  clearColor.onclick = () => {
+    swatches.hidden = true;
+    mmApplyNodeColor([...mapSelectedIds], null);
+  };
+  swatches.append(clearColor);
+  colorBtn.onclick = () => { swatches.hidden = !swatches.hidden; };
+  colorWrap.append(colorBtn, swatches);
+
+  bar.append(count, colorWrap, clearBtn);
+  return bar;
+}
+
+function mmWireMapCanvas(pan, canvas) {
+  pan.onclick = e => {
+    if (e.target.closest(".mmap-node")) return;
+    if (mapSelectMode || mapSelectedIds.size) {
+      clearMapSelection();
+      mmSyncSelectionBar();
+    }
+  };
+
+  if (!document._mmEscapeHook) {
+    document._mmEscapeHook = true;
+    document.addEventListener("keydown", e => {
+      if (e.key !== "Escape" || view !== "map") return;
+      if (mapDrag) { mmRemoveDragUI(); return; }
+      if (mapSelectedIds.size || mapSelectMode) {
+        clearMapSelection();
+        mmSyncSelectionBar();
+      }
+    });
+  }
+}
+
 function buildMapNode(n) {
-  const wrap = el("div", "mmap-node" + (n.isRoot ? " root" : ""));
+  const selected = mapSelectedIds.has(n.page.id);
+  const wrap = el("div", "mmap-node" + (n.isRoot ? " root" : "") + (selected ? " selected" : ""));
+  wrap.dataset.pageId = n.page.id;
   wrap.style.left = n.x + "px";
   wrap.style.top = (n.y - mmNodeH() / 2) + "px";
   wrap.style.width = n.rowW + "px";
@@ -1852,11 +2266,16 @@ function buildMapNode(n) {
   } else {
     const btn = el("button", "mmap-open");
     btn.style.width = n.openW + "px";
+    if (n.page.color) {
+      btn.style.setProperty("--mmap-color", n.page.color);
+      btn.classList.add("colored");
+    }
     const label = autoDir(el("span", "mmap-label", `${n.page.icon} ${n.page.title}`));
     btn.append(label);
-    btn.title = "Open page";
-    btn.onclick = () => openPage(n.page.id);
+    btn.title = "Open page · drag to move";
+    btn.style.touchAction = "none";
     wrap.append(btn);
+    mmAttachNodePointer(wrap, n.page);
 
     const rename = el("button", "mmap-name", "✎");
     rename.title = "Rename";
@@ -1905,8 +2324,8 @@ function renderMap(main) {
     : "🗺️ Mindmap";
   head.append(el("h1", "viewtitle", title));
   const sub = scoped
-    ? "This page and its sub-pages. Pinch or scroll to zoom."
-    : "Projects branch left to right. Click to write, ✎ to rename. Pinch or scroll to zoom.";
+    ? "Drag to move · long-press to multi-select. Pinch or scroll to zoom."
+    : "Projects branch left to right. Drag to move · long-press to multi-select.";
   head.append(el("p", "viewsub", sub));
   const zoomCtl = el("div", "mmap-zoomctl");
   const zoomOut = el("button", "mmap-zoombtn", "−");
@@ -1964,6 +2383,7 @@ function renderMap(main) {
   }
   const { nodes, edges, width, height } = layout;
   mapLayout = { width, height };
+  mapLayoutNodes = nodes;
 
   const viewport = el("div", "mindmap-viewport");
   const pan = el("div", "mindmap-pan");
@@ -1997,8 +2417,19 @@ function renderMap(main) {
   viewport.append(pan);
   main.append(viewport);
 
+  if (mapSelectedIds.size) main.append(mmBuildSelectionBar());
+
+  let dropLine = $("#mmDropLine");
+  if (!dropLine) {
+    dropLine = el("div", "mmap-dropline");
+    dropLine.id = "mmDropLine";
+    dropLine.hidden = true;
+    document.body.append(dropLine);
+  }
+
   const lbl = $("#mmZoomLbl");
   mmWireZoom(pan, scaler, canvas, lbl);
+  mmWireMapCanvas(pan, canvas);
 
   if (mapRenameId) {
     requestAnimationFrame(() => {
@@ -2060,7 +2491,7 @@ function toggleSidebar() {
       if (node) node.onclick = fn;
     };
 
-    on("navTasks", () => { view = "tasks"; closeSidebar(); render(); });
+    on("navTasks", () => { clearMapSelection(); view = "tasks"; closeSidebar(); render(); });
     on("navMap", () => {
       view = "map";
       mapZoomAuto = true;
