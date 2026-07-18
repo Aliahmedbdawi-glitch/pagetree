@@ -434,34 +434,44 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   background: var(--accent);
   transform: translateY(-50%);
 }
-.mmap-toolbar {
-  flex: 1 1 100%;
-  min-height: 0;
+.mmap-toolbar-row {
+  flex: none;
+  width: 100%;
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  margin-bottom: 8px;
 }
-.mmap-toolbar:empty { display: none; }
+.mmap-toolbar {
+  width: 100%;
+}
 .mmap-toolbar-inner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;
+  box-shadow: var(--shadow);
 }
 .mmap-tblabel {
   font-size: .85rem;
-  color: var(--ink-soft);
+  font-weight: 600;
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: min(40vw, 220px);
+  max-width: min(50vw, 280px);
+  flex: 0 1 auto;
 }
 .mmap-tbactions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  flex: 1 1 auto;
 }
 .mmap-tbbtn {
   padding: 6px 10px;
@@ -615,6 +625,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   .mmap-node { height: 48px; gap: 6px; }
   .mmap-open { padding: 10px 12px; min-height: 44px; touch-action: none; }
   .mmap-toolbar-inner { padding: 10px; gap: 8px; }
+  .mmap-toolbar-row { margin-bottom: 6px; }
   .mmap-tbbtn { min-height: 40px; padding: 8px 12px; font-size: .85rem; }
   .mmap-tblabel { max-width: 100%; flex: 1 1 100%; }
   .mmap-swatch { width: 36px; height: 36px; }

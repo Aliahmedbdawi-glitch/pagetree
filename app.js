@@ -625,7 +625,7 @@ function mmSyncMapToolbar() {
   const slot = $("#mmMapToolbar");
   if (!slot) return;
   slot.innerHTML = "";
-  if (mapSelectedIds.size) slot.append(mmBuildMapToolbar());
+  slot.append(mmBuildMapToolbar());
   if (!mapSelectedIds.size) mapSelectMode = false;
 }
 
@@ -2255,9 +2255,12 @@ function mmAttachNodePointer(wrap, page) {
 function mmBuildMapToolbar() {
   const bar = el("div", "mmap-toolbar-inner");
   const single = mmSingleSelected();
+  const hasSel = mapSelectedIds.size > 0;
   const label = single
     ? `${single.icon} ${single.title || "Untitled"}`
-    : `${mapSelectedIds.size} selected`;
+    : hasSel
+      ? `${mapSelectedIds.size} selected`
+      : "Select a node";
   bar.append(el("span", "mmap-tblabel", label));
 
   const actions = el("div", "mmap-tbactions");
@@ -2293,6 +2296,7 @@ function mmBuildMapToolbar() {
 
   const colorWrap = el("div", "mmap-tbcolors");
   const colorBtn = el("button", "mmap-tbbtn", "Color");
+  colorBtn.disabled = !hasSel;
   const swatches = el("div", "mmap-swatches");
   swatches.hidden = true;
   for (const c of TEXT_COLORS) {
@@ -2312,17 +2316,19 @@ function mmBuildMapToolbar() {
     mmApplyNodeColor([...mapSelectedIds], null);
   };
   swatches.append(clearColor);
-  colorBtn.onclick = () => { swatches.hidden = !swatches.hidden; };
+  colorBtn.onclick = () => { if (!hasSel) return; swatches.hidden = !swatches.hidden; };
   colorWrap.append(colorBtn, swatches);
   actions.append(colorWrap);
 
   const delBtn = el("button", "mmap-tbbtn mmap-tbbtn-danger", "Delete");
   delBtn.title = "Delete selected";
+  delBtn.disabled = !hasSel;
   delBtn.onclick = () => mmMapDeleteSelection();
   actions.append(delBtn);
 
   const clearBtn = el("button", "mmap-tbbtn", "Clear");
   clearBtn.title = "Clear selection";
+  clearBtn.disabled = !hasSel;
   clearBtn.onclick = () => { clearMapSelection(); mmSyncMapToolbar(); };
   actions.append(clearBtn);
 
@@ -2406,10 +2412,6 @@ function renderMap(main) {
   head.append(el("h1", "viewtitle", title));
   const sub = "Click to select · double-click to open · drag to move · long-press to multi-select.";
   head.append(el("p", "viewsub", sub));
-  const toolbarSlot = el("div", "mmap-toolbar");
-  toolbarSlot.id = "mmMapToolbar";
-  if (mapSelectedIds.size) toolbarSlot.append(mmBuildMapToolbar());
-  head.append(toolbarSlot);
   const zoomCtl = el("div", "mmap-zoomctl");
   const zoomOut = el("button", "mmap-zoombtn", "−");
   zoomOut.title = "Zoom out";
@@ -2438,6 +2440,11 @@ function renderMap(main) {
     head.append(addRoot);
   }
   main.append(head);
+
+  const toolbarRow = el("div", "mmap-toolbar-row");
+  toolbarRow.id = "mmMapToolbar";
+  toolbarRow.append(mmBuildMapToolbar());
+  main.append(toolbarRow);
 
   if (!roots.length) {
     const e = el("div", "mmap-empty");
