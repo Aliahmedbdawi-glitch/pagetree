@@ -11,6 +11,10 @@ let mapScopeId = null;       // null = all projects; page id = that page + desce
 let mapZoomAuto = true;      // true = scale to fit viewport
 let mapScale = 1;            // manual zoom level (1 = natural size)
 let mapLayout = null;        // last layout metrics for zoom handlers
+let mapLayoutNodes = [];     // last rendered node layout for hit-testing
+let mapSelectedIds = new Set();
+let mapSelectMode = false;
+let mapDrag = null;          // active pointer drag state
 let editKey = null;          // active typing session (one undo step per focus)
 let selectedBlockId = null;  // block targeted by doc toolbar actions
 let sb = null;               // Supabase client
@@ -1135,7 +1139,7 @@ function addTextBlock(page, focus = true) {
 
 function buildAddBlockMenu(page) {
   const wrap = el("div", "addmenu-wrap");
-  const btn = el("button", "tbtn", "＋ Text");
+  const btn = el("button", "tbtn", "＋");
   btn.title = "Add text block";
   btn.onclick = () => insertBlock(page, getInsertIndex(page), "text");
 
@@ -1251,7 +1255,7 @@ function buildDocToolbar(page, path) {
   );
 
   const pageActs = el("div", "doctoolbar-group doctoolbar-page");
-  const addSub = el("button", "tbtn", "＋ Page");
+  const addSub = el("button", "tbtn", "＋");
   addSub.title = "Add sub-page";
   addSub.onclick = () => record(() => addSubPage(page, { noSave: true }));
   const copyBtn = el("button", "tbtn", "Copy");
@@ -1266,7 +1270,7 @@ function buildDocToolbar(page, path) {
       alert("Could not copy to clipboard.");
     }
   };
-  const del = el("button", "tbtn tbtn-danger", "Delete page");
+  const del = el("button", "tbtn tbtn-danger", "✕");
   del.title = "Delete page and all sub-pages";
   del.onclick = () => confirmAndDeletePage(page);
   pageActs.append(addSub, copyBtn, del);

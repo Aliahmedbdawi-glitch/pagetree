@@ -121,40 +121,37 @@ input, textarea { font: inherit; color: inherit; }
   top: 0;
   z-index: 10;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px 14px;
-  padding: 4px 0 10px;
-  margin: 0 0 16px;
-  background: color-mix(in srgb, var(--paper) 90%, transparent);
-  backdrop-filter: blur(8px);
+  gap: 4px 6px;
+  width: 100%;
+  max-width: 100%;
+  padding: 2px 0 8px;
+  margin: 0 0 12px;
+  background: transparent;
   border: none;
-  border-radius: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
+  overflow: visible;
 }
 .doctoolbar-group {
   display: flex;
   align-items: center;
-  gap: 3px;
-  flex-wrap: nowrap;
+  gap: 2px;
+  flex-wrap: wrap;
   flex-shrink: 0;
 }
 .doctoolbar-group + .doctoolbar-group {
-  margin-left: 2px;
-  padding-left: 12px;
-  border-left: 1px solid color-mix(in srgb, var(--line) 32%, transparent);
+  margin-left: 0;
+  padding-left: 0;
+  border-left: none;
 }
 .tbtn {
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: .84rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: .82rem;
   font-weight: 500;
   color: var(--ink-soft);
-  min-height: 34px;
-  min-width: 34px;
+  min-height: 30px;
+  min-width: 28px;
   line-height: 1.2;
   background: transparent;
   border: none;
@@ -162,20 +159,21 @@ input, textarea { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 .tbtn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
-.tbtn:disabled { opacity: .65; cursor: default; color: var(--ink-soft); }
+.tbtn:disabled { opacity: .5; cursor: default; }
+.tbtn-danger { color: var(--danger); }
 .tbtn-danger:hover:not(:disabled) { background: #FBEDEA; color: var(--danger); }
 
 .colormenu-wrap { position: relative; flex-shrink: 0; }
 .color-trigger {
-  width: 34px;
-  min-width: 34px;
+  width: 30px;
+  min-width: 30px;
   padding: 0;
   border-radius: 50%;
 }
 .color-trigger-dot {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   margin: auto;
   border-radius: 50%;
   border: 2px solid #fff;
@@ -298,7 +296,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 }
 
 .addmenu-wrap { position: relative; display: inline-flex; align-items: stretch; gap: 0; flex-shrink: 0; }
-.addmenu-more { padding-left: 6px; padding-right: 6px; min-width: 34px; }
+.addmenu-more { padding-left: 4px; padding-right: 4px; min-width: 28px; }
 .addmenu {
   position: absolute;
   top: calc(100% + 4px);
@@ -507,11 +505,10 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   .pagedoc { max-width: none; }
   .titleinput { font-size: 1.75rem; }
   .bigicon { font-size: 3rem; }
-  .doctoolbar { gap: 8px 10px; padding: 4px 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .doctoolbar-group + .doctoolbar-group { padding-left: 10px; margin-left: 0; }
-  .tbtn { padding: 8px 12px; min-height: 40px; min-width: 40px; font-size: .88rem; }
-  .color-trigger { width: 40px; min-width: 40px; }
-  .color-trigger-dot { width: 22px; height: 22px; }
+  .doctoolbar { gap: 4px 5px; padding: 2px 0 6px; overflow: visible; }
+  .tbtn { padding: 6px 10px; min-height: 36px; min-width: 32px; font-size: .86rem; }
+  .color-trigger { width: 36px; min-width: 36px; }
+  .color-trigger-dot { width: 18px; height: 18px; }
   .colormenu-swatch { width: 28px; height: 28px; }
   .chip { padding: 10px 14px; font-size: .9rem; min-height: 40px; }
   .tbltools .chip { padding: 8px 10px; font-size: .88rem; min-height: 36px; }
