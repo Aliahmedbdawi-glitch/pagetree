@@ -15,6 +15,7 @@ let mapLayoutNodes = [];     // last rendered node layout for hit-testing
 let mapSelectedIds = new Set();
 let mapSelectMode = false;
 let mapDrag = null;          // active pointer drag state
+let mmLastTap = { id: null, t: 0 };
 let editKey = null;          // active typing session (one undo step per focus)
 let selectedBlockId = null;  // block targeted by doc toolbar actions
 let sb = null;               // Supabase client
@@ -612,24 +613,20 @@ function clearMapSelection() {
   mapSelectMode = false;
 }
 
-function mmSyncSelectionBar() {
-  const main = $("#main");
-  if (!main || view !== "map") return;
-  let bar = $("#mmSelBar");
-  if (!mapSelectedIds.size) {
-    if (bar) bar.remove();
-    mapSelectMode = false;
-  } else {
-    if (!bar) main.append(mmBuildSelectionBar());
-    else {
-      const count = bar.querySelector(".mmap-selcount");
-      if (count) count.textContent = `${mapSelectedIds.size} selected`;
-    }
-  }
+function mmSingleSelected() {
+  if (mapSelectedIds.size !== 1) return null;
+  return findPage([...mapSelectedIds][0])?.page || null;
+}
+
+function mmSyncMapToolbar() {
   document.querySelectorAll(".mmap-node").forEach(node => {
-    const id = node.dataset.pageId;
-    node.classList.toggle("selected", mapSelectedIds.has(id));
+    node.classList.toggle("selected", mapSelectedIds.has(node.dataset.pageId));
   });
+  const slot = $("#mmMapToolbar");
+  if (!slot) return;
+  slot.innerHTML = "";
+  if (mapSelectedIds.size) slot.append(mmBuildMapToolbar());
+  if (!mapSelectedIds.size) mapSelectMode = false;
 }
 
 function mmToggleSelect(pageId, forceOn) {
@@ -637,7 +634,57 @@ function mmToggleSelect(pageId, forceOn) {
   else if (mapSelectedIds.has(pageId)) mapSelectedIds.delete(pageId);
   else mapSelectedIds.add(pageId);
   if (!mapSelectedIds.size) mapSelectMode = false;
-  mmSyncSelectionBar();
+  mmSyncMapToolbar();
+}
+
+function mmSelectPage(pageId) {
+  mapSelectedIds.clear();
+  mapSelectedIds.add(pageId);
+  mmSyncMapToolbar();
+}
+
+function mmMapAddChild() {
+  const page = mmSingleSelected();
+  if (!page) return;
+  record(() => {
+    const c = newPage("Untitled", "📄");
+    page.children.push(c);
+    ws.expanded[page.id] = true;
+    mapRenameId = c.id;
+    mapSelectedIds.clear();
+    mapSelectedIds.add(c.id);
+    view = "map";
+  });
+}
+
+function mmMapAddSibling() {
+  const page = mmSingleSelected();
+  if (!page) return;
+  record(() => {
+    const list = findParentList(page.id);
+    const idx = list.findIndex(p => p.id === page.id);
+    const c = newPage("Untitled", "📄");
+    list.splice(idx + 1, 0, c);
+    mapRenameId = c.id;
+    mapSelectedIds.clear();
+    mapSelectedIds.add(c.id);
+    view = "map";
+  });
+}
+
+function mmMapDeleteSelection() {
+  const ids = [...mapSelectedIds];
+  if (!ids.length) return;
+  if (ids.length === 1) {
+    const hit = findPage(ids[0]);
+    if (hit) confirmAndDeletePage(hit.page);
+    return;
+  }
+  if (!confirm(`Delete ${ids.length} pages and their sub-pages? This cannot be undone.`)) return;
+  record(() => {
+    for (const id of ids) deletePageSubtree(id);
+    clearMapSelection();
+  });
 }
 
 function mmApplyNodeColor(pageIds, color) {
@@ -1714,14 +1761,24 @@ function mmLabelWidth(page, isRoot) {
 function mmNodeDims(page, isRoot) {
   const phone = mmIsPhone();
   const openW = mmLabelWidth(page, isRoot) + (phone ? 8 : 0);
-  const twistyW = page.children.length ? (phone ? 40 : 26) : 0;
-  const tailW = phone ? 84 : MM.tailW;
-  const rowW = twistyW + openW + tailW;
-  return { openW, rowW, twistyW };
+  return { openW, rowW: openW, twistyW: 0 };
 }
 
 function mmIsOpen(page) {
   return ws.expanded[page.id] !== false;
+}
+
+function mmDescendantCount(page) {
+  let n = 0;
+  const walk = p => { for (const c of p.children) { n++; walk(c); } };
+  walk(page);
+  return n;
+}
+
+function mmToggleCollapse(page) {
+  record(() => {
+    ws.expanded[page.id] = mmIsOpen(page) ? false : true;
+  });
 }
 
 function mmComputeColumns(pages) {
@@ -1773,12 +1830,12 @@ function layoutMindmapTree(page, depth, isRoot, yCursor, colX) {
   const yCenter = (childLayouts[0].y + childLayouts[childLayouts.length - 1].y) / 2;
   const node = { page, x, y: yCenter, isRoot, ...dims };
   nodes.unshift(node);
-  const parentRight = x + dims.twistyW + dims.openW;
+  const parentRight = x + dims.openW;
   for (const child of childLayouts) {
     edges.push({
       x1: parentRight,
       y1: yCenter,
-      x2: child.x + child.twistyW,
+      x2: child.x,
       y2: child.y,
     });
   }
@@ -2091,6 +2148,7 @@ function mmAttachNodePointer(wrap, page) {
 
   let pressTimer = null;
   let dragStarted = false;
+  let longPressed = false;
   let startX = 0;
   let startY = 0;
   let activePointer = null;
@@ -2098,6 +2156,12 @@ function mmAttachNodePointer(wrap, page) {
   const clearPress = () => {
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
   };
+
+  openBtn.addEventListener("dblclick", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    openPage(page.id);
+  });
 
   openBtn.addEventListener("pointerdown", e => {
     if (mapRenameId) return;
@@ -2119,9 +2183,10 @@ function mmAttachNodePointer(wrap, page) {
       if (!dragStarted && activePointer != null) {
         navigator.vibrate?.(12);
         mapSelectMode = true;
+        longPressed = true;
         mapSelectedIds.add(page.id);
         wrap.classList.add("selected");
-        mmSyncSelectionBar();
+        mmSyncMapToolbar();
       }
     }, 350);
 
@@ -2153,15 +2218,28 @@ function mmAttachNodePointer(wrap, page) {
     if (dragStarted || mapDrag) {
       mmDragEnd(e);
       dragStarted = false;
+      longPressed = false;
       activePointer = null;
       return;
     }
 
-    if (mapSelectMode) {
-      mmToggleSelect(page.id);
-    } else {
-      openPage(page.id);
+    if (longPressed) {
+      longPressed = false;
+      activePointer = null;
+      return;
     }
+
+    const now = Date.now();
+    if (mmLastTap.id === page.id && now - mmLastTap.t < 300) {
+      mmLastTap = { id: null, t: 0 };
+      openPage(page.id);
+      activePointer = null;
+      return;
+    }
+    mmLastTap = { id: page.id, t: now };
+
+    if (mapSelectMode) mmToggleSelect(page.id);
+    else mmSelectPage(page.id);
     activePointer = null;
   };
 
@@ -2174,15 +2252,47 @@ function mmAttachNodePointer(wrap, page) {
   });
 }
 
-function mmBuildSelectionBar() {
-  const bar = el("div", "mmap-selbar");
-  bar.id = "mmSelBar";
-  const count = el("span", "mmap-selcount", `${mapSelectedIds.size} selected`);
-  const clearBtn = el("button", "mmap-selbtn", "Clear");
-  clearBtn.onclick = () => { clearMapSelection(); mmSyncSelectionBar(); };
+function mmBuildMapToolbar() {
+  const bar = el("div", "mmap-toolbar-inner");
+  const single = mmSingleSelected();
+  const label = single
+    ? `${single.icon} ${single.title || "Untitled"}`
+    : `${mapSelectedIds.size} selected`;
+  bar.append(el("span", "mmap-tblabel", label));
 
-  const colorWrap = el("div", "mmap-selcolors");
-  const colorBtn = el("button", "mmap-selbtn", "Color");
+  const actions = el("div", "mmap-tbactions");
+
+  const addChild = el("button", "mmap-tbbtn", "Child");
+  addChild.title = "Add sub-page";
+  addChild.disabled = !single;
+  addChild.onclick = () => mmMapAddChild();
+  actions.append(addChild);
+
+  const addSibling = el("button", "mmap-tbbtn", "Sibling");
+  addSibling.title = "Add sibling page";
+  addSibling.disabled = !single;
+  addSibling.onclick = () => mmMapAddSibling();
+  actions.append(addSibling);
+
+  if (single && single.children.length) {
+    const collapsed = !mmIsOpen(single);
+    const hidden = collapsed ? mmDescendantCount(single) : 0;
+    const collapseBtn = el("button", "mmap-tbbtn", collapsed ? "Expand" : "Collapse");
+    collapseBtn.title = collapsed
+      ? `Expand ${hidden} hidden sub-page${hidden === 1 ? "" : "s"}`
+      : "Collapse sub-pages";
+    collapseBtn.onclick = () => mmToggleCollapse(single);
+    actions.append(collapseBtn);
+  }
+
+  const renameBtn = el("button", "mmap-tbbtn", "Rename");
+  renameBtn.title = "Rename page";
+  renameBtn.disabled = !single;
+  renameBtn.onclick = () => { mapRenameId = single.id; render(); };
+  actions.append(renameBtn);
+
+  const colorWrap = el("div", "mmap-tbcolors");
+  const colorBtn = el("button", "mmap-tbbtn", "Color");
   const swatches = el("div", "mmap-swatches");
   swatches.hidden = true;
   for (const c of TEXT_COLORS) {
@@ -2204,8 +2314,19 @@ function mmBuildSelectionBar() {
   swatches.append(clearColor);
   colorBtn.onclick = () => { swatches.hidden = !swatches.hidden; };
   colorWrap.append(colorBtn, swatches);
+  actions.append(colorWrap);
 
-  bar.append(count, colorWrap, clearBtn);
+  const delBtn = el("button", "mmap-tbbtn mmap-tbbtn-danger", "Delete");
+  delBtn.title = "Delete selected";
+  delBtn.onclick = () => mmMapDeleteSelection();
+  actions.append(delBtn);
+
+  const clearBtn = el("button", "mmap-tbbtn", "Clear");
+  clearBtn.title = "Clear selection";
+  clearBtn.onclick = () => { clearMapSelection(); mmSyncMapToolbar(); };
+  actions.append(clearBtn);
+
+  bar.append(actions);
   return bar;
 }
 
@@ -2214,7 +2335,7 @@ function mmWireMapCanvas(pan, canvas) {
     if (e.target.closest(".mmap-node")) return;
     if (mapSelectMode || mapSelectedIds.size) {
       clearMapSelection();
-      mmSyncSelectionBar();
+      mmSyncMapToolbar();
     }
   };
 
@@ -2225,7 +2346,7 @@ function mmWireMapCanvas(pan, canvas) {
       if (mapDrag) { mmRemoveDragUI(); return; }
       if (mapSelectedIds.size || mapSelectMode) {
         clearMapSelection();
-        mmSyncSelectionBar();
+        mmSyncMapToolbar();
       }
     });
   }
@@ -2233,22 +2354,14 @@ function mmWireMapCanvas(pan, canvas) {
 
 function buildMapNode(n) {
   const selected = mapSelectedIds.has(n.page.id);
-  const wrap = el("div", "mmap-node" + (n.isRoot ? " root" : "") + (selected ? " selected" : ""));
+  const hasKids = n.page.children.length > 0;
+  const collapsed = hasKids && !mmIsOpen(n.page);
+  const wrap = el("div", "mmap-node" + (n.isRoot ? " root" : "") + (selected ? " selected" : "") + (collapsed ? " collapsed" : ""));
   wrap.dataset.pageId = n.page.id;
   wrap.style.left = n.x + "px";
   wrap.style.top = (n.y - mmNodeH() / 2) + "px";
   wrap.style.width = n.rowW + "px";
   wrap.style.height = mmNodeH() + "px";
-
-  if (n.page.children.length) {
-    const tw = el("button", "mmap-twisty", mmIsOpen(n.page) ? "▾" : "▸");
-    tw.title = "Expand / collapse";
-    tw.onclick = e => {
-      e.stopPropagation();
-      record(() => { ws.expanded[n.page.id] = !mmIsOpen(n.page); });
-    };
-    wrap.append(tw);
-  }
 
   if (mapRenameId === n.page.id) {
     const inp = autoDir(el("input", "mmap-rename"));
@@ -2272,44 +2385,12 @@ function buildMapNode(n) {
     }
     const label = autoDir(el("span", "mmap-label", `${n.page.icon} ${n.page.title}`));
     btn.append(label);
-    btn.title = "Open page · drag to move";
+    btn.title = "Click to select · double-click to open · drag to move";
     btn.style.touchAction = "none";
     wrap.append(btn);
     mmAttachNodePointer(wrap, n.page);
-
-    const rename = el("button", "mmap-name", "✎");
-    rename.title = "Rename";
-    rename.setAttribute("aria-label", "Rename page");
-    rename.onclick = e => {
-      e.stopPropagation();
-      mapRenameId = n.page.id;
-      render();
-    };
-    wrap.append(rename);
   }
 
-  const del = el("button", "mmap-del", "✕");
-  del.title = "Delete page and sub-pages";
-  del.setAttribute("aria-label", "Delete page");
-  del.onclick = e => {
-    e.stopPropagation();
-    confirmAndDeletePage(n.page);
-  };
-  wrap.append(del);
-
-  const add = el("button", "mmap-add", "＋");
-  add.title = "Add sub-page";
-  add.onclick = e => {
-    e.stopPropagation();
-    record(() => {
-      const c = newPage("Untitled", "📄");
-      n.page.children.push(c);
-      ws.expanded[n.page.id] = true;
-      mapRenameId = c.id;
-      view = "map";
-    });
-  };
-  wrap.append(add);
   return wrap;
 }
 
@@ -2323,10 +2404,12 @@ function renderMap(main) {
     ? `🗺️ Mindmap · ${scopePage.icon} ${scopePage.title || "Untitled"}`
     : "🗺️ Mindmap";
   head.append(el("h1", "viewtitle", title));
-  const sub = scoped
-    ? "Drag to move · long-press to multi-select. Pinch or scroll to zoom."
-    : "Projects branch left to right. Drag to move · long-press to multi-select.";
+  const sub = "Click to select · double-click to open · drag to move · long-press to multi-select.";
   head.append(el("p", "viewsub", sub));
+  const toolbarSlot = el("div", "mmap-toolbar");
+  toolbarSlot.id = "mmMapToolbar";
+  if (mapSelectedIds.size) toolbarSlot.append(mmBuildMapToolbar());
+  head.append(toolbarSlot);
   const zoomCtl = el("div", "mmap-zoomctl");
   const zoomOut = el("button", "mmap-zoombtn", "−");
   zoomOut.title = "Zoom out";
@@ -2416,8 +2499,6 @@ function renderMap(main) {
   pan.append(scaler);
   viewport.append(pan);
   main.append(viewport);
-
-  if (mapSelectedIds.size) main.append(mmBuildSelectionBar());
 
   let dropLine = $("#mmDropLine");
   if (!dropLine) {

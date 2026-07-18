@@ -385,38 +385,15 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 .mindmap-edge { fill: none; stroke: var(--line); stroke-width: 2; }
 .mindmap-nodes { position: absolute; inset: 0; }
 .mmap-node { position: absolute; display: flex; align-items: center; gap: 4px; height: 44px; }
-.mmap-twisty { flex: none; width: 22px; height: 28px; padding: 0; font-size: .75rem; color: var(--ink-soft); border-radius: 6px; }
-.mmap-twisty:hover { color: var(--accent); background: var(--wash); }
-.mmap-node.collapsed .mmap-twisty { color: var(--accent); background: var(--accent-soft); }
-.mmap-collapsed-badge {
-  flex: none;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: .72rem;
-  font-weight: 600;
-  line-height: 20px;
-  cursor: pointer;
-}
-.mmap-collapsed-badge:hover { filter: brightness(1.05); }
 .mmap-node.collapsed .mmap-open {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  opacity: .88;
 }
-.mmap-open { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; box-shadow: var(--shadow); font-size: .9rem; text-align: left; }
+.mmap-open { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; box-shadow: var(--shadow); font-size: .9rem; text-align: left; width: 100%; }
 .mmap-open:hover { border-color: var(--accent); color: var(--accent); }
 .mmap-node.root .mmap-open { font-weight: 600; border-width: 2px; border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .mmap-label { white-space: nowrap; }
-.mmap-name { flex: none; width: 18px; height: 18px; padding: 0; font-size: .62rem; line-height: 1; color: var(--ink-soft); border-radius: 4px; border: none; background: transparent; opacity: .75; }
-.mmap-name:hover { color: var(--accent); opacity: 1; background: var(--wash); }
-.mmap-add { flex: none; width: 24px; height: 24px; padding: 0; font-size: .85rem; color: var(--ink-soft); border-radius: 6px; border: 1px dashed var(--line); background: transparent; }
-.mmap-add:hover { color: var(--accent); border-color: var(--accent); background: var(--wash); }
-.mmap-del { flex: none; width: 24px; height: 24px; padding: 0; font-size: .75rem; color: var(--ink-soft); border-radius: 6px; border: 1px solid var(--line); background: transparent; }
-.mmap-del:hover { color: var(--danger); border-color: var(--danger); background: #FBEDEA; }
 .mmap-rename { flex: none; padding: 7px 10px; border: 1px solid var(--accent); border-radius: 8px; font: inherit; font-size: .9rem; background: var(--surface); }
 .mmap-open.colored {
   border-color: color-mix(in srgb, var(--mmap-color) 55%, var(--line));
@@ -457,37 +434,52 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   background: var(--accent);
   transform: translateY(-50%);
 }
-.mmap-selbar {
-  position: fixed;
-  left: 50%;
-  bottom: max(18px, calc(14px + env(safe-area-inset-bottom, 0px)));
-  transform: translateX(-50%);
-  z-index: 40;
+.mmap-toolbar {
+  flex: 1 1 100%;
+  min-height: 0;
+}
+.mmap-toolbar:empty { display: none; }
+.mmap-toolbar-inner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: 8px 12px;
+  padding: 8px 10px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
+  border-radius: 10px;
 }
-.mmap-selcount { font-size: .85rem; color: var(--ink-soft); white-space: nowrap; }
-.mmap-selbtn {
-  padding: 8px 12px;
+.mmap-tblabel {
+  font-size: .85rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(40vw, 220px);
+}
+.mmap-tbactions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.mmap-tbbtn {
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
-  font-size: .85rem;
+  font-size: .8rem;
   color: var(--ink-soft);
+  white-space: nowrap;
 }
-.mmap-selbtn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.mmap-selcolors { position: relative; }
+.mmap-tbbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.mmap-tbbtn:disabled { opacity: .45; cursor: default; }
+.mmap-tbbtn-danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); background: #FBEDEA; }
+.mmap-tbcolors { position: relative; }
 .mmap-swatches {
   position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
+  top: calc(100% + 6px);
+  left: 0;
   display: flex;
   gap: 6px;
   padding: 8px;
@@ -495,6 +487,7 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: var(--shadow);
+  z-index: 5;
 }
 .mmap-swatch {
   width: 28px;
@@ -620,14 +613,10 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   .mmap-zoomlbl { min-width: 44px; font-size: .85rem; }
   .mmap-newroot { padding: 10px 12px; min-height: 40px; }
   .mmap-node { height: 48px; gap: 6px; }
-  .mmap-twisty { width: 36px; height: 36px; font-size: .9rem; }
-  .mmap-collapsed-badge { min-width: 28px; height: 28px; font-size: .78rem; line-height: 26px; }
-  .mmap-name { width: 36px; height: 36px; font-size: .85rem; opacity: 1; border: 1px solid var(--line); border-radius: 8px; }
-  .mmap-add { width: 36px; height: 36px; font-size: 1rem; }
-  .mmap-del { width: 36px; height: 36px; font-size: .85rem; }
   .mmap-open { padding: 10px 12px; min-height: 44px; touch-action: none; }
-  .mmap-selbar { width: min(92vw, 420px); justify-content: space-between; flex-wrap: wrap; }
-  .mmap-selbtn { min-height: 44px; padding: 10px 14px; }
+  .mmap-toolbar-inner { padding: 10px; gap: 8px; }
+  .mmap-tbbtn { min-height: 40px; padding: 8px 12px; font-size: .85rem; }
+  .mmap-tblabel { max-width: 100%; flex: 1 1 100%; }
   .mmap-swatch { width: 36px; height: 36px; }
 
   /* page editor */
