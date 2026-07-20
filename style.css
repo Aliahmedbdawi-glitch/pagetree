@@ -618,6 +618,25 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
 .syncbadge.offline, .syncbadge.local { color: var(--ink-soft); }
 .syncbadge.merged { color: #B07D12; border-color: color-mix(in srgb, #B07D12 35%, var(--line)); }
 
+.syncpanel .syncactions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+.syncpanel .synclist {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  font-size: .75rem;
+  line-height: 1.35;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  white-space: pre-wrap;
+}
+
 /* ---------- mobile ---------- */
 @media (max-width: 760px) {
   #app { grid-template-columns: 1fr; }

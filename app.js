@@ -68,6 +68,8 @@ function normalizeWorkspace(data) {
 /* ---------- local + cloud storage ---------- */
 const DB = "pagetree", STORE = "kv";
 const LOCAL_META_KEY = "workspace_meta";
+const SNAPSHOTS_KEY = "workspace_snapshots";
+const MAX_SNAPSHOTS = 12;
 
 function idb() {
   return new Promise((res, rej) => {
@@ -111,6 +113,38 @@ async function persistLocalMeta() {
     lastCloudSeenAt,
     dirty: localDirty,
   });
+}
+function countAllPages(pages) {
+  let n = 0;
+  walk(pages || [], p => { n++; });
+  return n;
+}
+function listPageTitles(pages, out = [], depth = 0) {
+  for (const p of pages || []) {
+    out.push(`${"  ".repeat(depth)}${p.icon || "📄"} ${p.title || "Untitled"}`);
+    listPageTitles(p.children, out, depth + 1);
+  }
+  return out;
+}
+async function loadSnapshots() {
+  const list = await idbGet(SNAPSHOTS_KEY);
+  return Array.isArray(list) ? list : [];
+}
+async function pushSnapshot(reason, workspace) {
+  if (!workspace) return;
+  try {
+    const list = await loadSnapshots();
+    list.unshift({
+      id: uid(),
+      at: Date.now(),
+      reason: reason || "save",
+      pageCount: countAllPages(workspace.pages),
+      ws: JSON.parse(JSON.stringify(workspace)),
+    });
+    await idbPut(SNAPSHOTS_KEY, list.slice(0, MAX_SNAPSHOTS));
+  } catch (e) {
+    console.warn("snapshot failed", e);
+  }
 }
 function stampCurrentPage() {
   if (!ws || !currentPageId) return;
@@ -426,19 +460,208 @@ function setSyncBadge(state) {
   badge.textContent = labels[state] || state;
   badge.title = !signedIn || preferOffline
     ? "Cloud sync is off. Click to sign in so phone and PC share pages."
-    : state === "synced"
-      ? "Workspace is synced to the cloud."
-      : state === "syncing"
-        ? "Uploading your latest edits…"
-        : state === "merged"
-          ? "Combined phone and PC changes. Uploading…"
-          : "Cannot reach the cloud. Edits stay on this device until you’re back online.";
+    : "Click for sync & recovery options";
   badge.onclick = () => {
     if (!session?.user || preferOffline) {
       preferOffline = false;
       showAuthGate("Sign in with the same account you use on your phone.");
+      return;
+    }
+    showSyncPanel();
+  };
+}
+
+function downloadJsonBackup(workspace, label) {
+  const data = workspace || ws;
+  if (!data) return;
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  const date = new Date().toISOString().slice(0, 10);
+  a.href = URL.createObjectURL(blob);
+  a.download = `pagetree-backup-${label || date}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function importJsonBackupFile() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "application/json,.json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const incoming = normalizeWorkspace(parsed.data || parsed);
+      if (!incoming.pages?.length) throw new Error("No pages in backup file.");
+      await pushSnapshot("before-json-import", ws);
+      const merged = ws ? mergeWorkspaces(ws, incoming, localUpdatedAt || Date.now(), Date.now()) : incoming;
+      applyResolvedWorkspace(merged, Date.now(), { dirty: true, render: true });
+      localDirty = true;
+      await flushAllSaves();
+      alert(`Imported backup and merged. Now ${countAllPages(ws.pages)} pages on this device.`);
+      setSyncBadge(cloudReady ? "syncing" : "local");
+    } catch (e) {
+      alert(e.message || "Could not import JSON backup.");
     }
   };
+  input.click();
+}
+
+async function forcePushThisDevice() {
+  if (!session?.user?.id) {
+    showAuthGate("Sign in first, then upload this device.");
+    return;
+  }
+  if (!ws) return;
+  if (!confirm("Upload THIS device’s pages to the cloud and overwrite the cloud copy?\n\nDo this on the PHONE if the phone still has the missing pages.")) return;
+  preferOffline = false;
+  cloudReady = true;
+  setSyncBadge("syncing");
+  try {
+    await flushLocalSave();
+    localDirty = true;
+    const pushedAt = await cloudPushWorkspace(session.user.id, ws);
+    lastCloudSeenAt = pushedAt;
+    localDirty = false;
+    await persistLocalMeta();
+    setSyncBadge("synced");
+    alert("Uploaded. On your PC: open Sync → Download cloud (replace).");
+  } catch (e) {
+    console.error(e);
+    setSyncBadge("offline");
+    alert(e.message || "Upload failed. Check internet and try again.");
+  }
+}
+
+async function forcePullCloud(mode) {
+  if (!session?.user?.id) {
+    showAuthGate("Sign in first.");
+    return;
+  }
+  const replace = mode === "replace";
+  const msg = replace
+    ? "Download cloud and REPLACE everything on this device?\n\nUse after the phone has uploaded the missing pages."
+    : "Download cloud and MERGE with this device?";
+  if (!confirm(msg)) return;
+  setSyncBadge("syncing");
+  try {
+    const cloud = await cloudFetchWorkspace(session.user.id);
+    cloudReady = true;
+    if (!cloud?.ws) {
+      alert("Cloud has no workspace for this account yet. Upload from the phone first.");
+      setSyncBadge("synced");
+      return;
+    }
+    await pushSnapshot(replace ? "before-force-replace" : "before-force-merge", ws || defaultWorkspace());
+    if (replace) {
+      applyResolvedWorkspace(cloud.ws, cloud.updatedAt, { dirty: false, render: true });
+      setSyncBadge("synced");
+      alert(`Replaced with cloud (${countAllPages(ws.pages)} pages).`);
+    } else {
+      const merged = mergeWorkspaces(ws || defaultWorkspace(), cloud.ws, localUpdatedAt || 0, cloud.updatedAt);
+      applyResolvedWorkspace(merged, Math.max(localUpdatedAt, cloud.updatedAt), { dirty: true, render: true });
+      await flushCloudSave();
+      alert(`Merged with cloud (${countAllPages(ws.pages)} pages).`);
+    }
+  } catch (e) {
+    console.error(e);
+    setSyncBadge("offline");
+    alert(e.message || "Download failed.");
+  }
+}
+
+async function restoreLocalSnapshot(snapId) {
+  const list = await loadSnapshots();
+  const snap = list.find(s => s.id === snapId);
+  if (!snap?.ws) {
+    alert("Snapshot not found.");
+    return;
+  }
+  if (!confirm(`Restore snapshot from ${new Date(snap.at).toLocaleString()} (${snap.pageCount} pages)?`)) return;
+  await pushSnapshot("before-restore", ws || defaultWorkspace());
+  applyResolvedWorkspace(snap.ws, Date.now(), { dirty: true, render: true });
+  await flushAllSaves();
+  alert("Snapshot restored on this device.");
+}
+
+async function showSyncPanel() {
+  const gate = $("#authGate");
+  if (!gate) return;
+  gate.hidden = false;
+  gate.innerHTML = "";
+  const card = el("div", "authcard syncpanel");
+  card.append(el("h2", null, "Sync & recover"));
+  card.append(el("p", "authsub", "If pages are missing: upload from the PHONE first, then download on the PC."));
+
+  const localCount = ws ? countAllPages(ws.pages) : 0;
+  const status = el("p", "authsub");
+  status.textContent = `This device: ${localCount} pages · ${session?.user?.email || "not signed in"} · ${localDirty ? "unsaved to cloud" : "in sync (or offline)"}`;
+  card.append(status);
+
+  const cloudInfo = el("p", "authsub");
+  cloudInfo.textContent = "Checking cloud…";
+  card.append(cloudInfo);
+  if (session?.user?.id && sb) {
+    cloudFetchWorkspace(session.user.id).then(cloud => {
+      if (!cloud) {
+        cloudInfo.textContent = "Cloud: empty for this account — phone never uploaded, or wrong account.";
+        return;
+      }
+      const titles = listPageTitles(cloud.ws.pages).slice(0, 12);
+      cloudInfo.innerHTML = "";
+      cloudInfo.append(document.createTextNode(
+        `Cloud: ${countAllPages(cloud.ws.pages)} pages · updated ${new Date(cloud.updatedAt).toLocaleString()}`
+      ));
+      if (titles.length) {
+        const pre = el("pre", "synclist");
+        pre.textContent = titles.join("\n") + (listPageTitles(cloud.ws.pages).length > 12 ? "\n…" : "");
+        cloudInfo.append(pre);
+      }
+    }).catch(e => {
+      cloudInfo.textContent = "Cloud check failed: " + (e.message || "offline");
+    });
+  } else {
+    cloudInfo.textContent = "Cloud: sign in to compare.";
+  }
+
+  const actions = el("div", "syncactions");
+  const mk = (label, fn, primary) => {
+    const b = el("button", primary ? "authbtn primary" : "authbtn", label);
+    b.type = "button";
+    b.onclick = async () => {
+      b.disabled = true;
+      try { await fn(); await showSyncPanel(); } finally { b.disabled = false; }
+    };
+    actions.append(b);
+  };
+  mk("1. Upload this device → cloud", forcePushThisDevice, true);
+  mk("2. Download cloud (replace this device)", () => forcePullCloud("replace"));
+  mk("3. Download cloud (merge)", () => forcePullCloud("merge"));
+  mk("Export JSON backup", () => downloadJsonBackup(ws, "device"));
+  mk("Import JSON backup", importJsonBackupFile);
+
+  const snaps = await loadSnapshots();
+  if (snaps.length) {
+    card.append(el("p", "authsub", "Local recovery snapshots on this device:"));
+    const snapBox = el("div", "syncactions");
+    for (const s of snaps.slice(0, 6)) {
+      const b = el("button", "authbtn", `${new Date(s.at).toLocaleString()} · ${s.pageCount}p · ${s.reason}`);
+      b.type = "button";
+      b.onclick = async () => { await restoreLocalSnapshot(s.id); hideAuthGate(); };
+      snapBox.append(b);
+    }
+    card.append(snapBox);
+  }
+
+  const close = el("button", "authbtn", "Close");
+  close.type = "button";
+  close.onclick = () => hideAuthGate();
+
+  card.append(actions);
+  card.append(close);
+  gate.append(card);
 }
 function updateAccountButton() {
   const btn = $("#navAccount");
@@ -646,6 +869,9 @@ async function startApp() {
 
         const decided = reconcileLocalAndCloud(latestLocal, cloud);
         const wasMerged = decided.reason === "merged" || decided.reason === "merged-fallback";
+        if (latestLocal.ws) {
+          await pushSnapshot("before-sync-" + decided.reason, latestLocal.ws);
+        }
         applyResolvedWorkspace(decided.ws, decided.cloudAt, { dirty: decided.dirty, render: true });
         if (decided.push) {
           setSyncBadge(wasMerged ? "merged" : "syncing");
@@ -2999,6 +3225,14 @@ function toggleSidebar() {
     }));
     on("exportMdBtn", () => downloadMarkdown());
     on("importMdBtn", () => importMarkdownFile());
+    on("syncRecoverBtn", () => {
+      if (!session?.user || preferOffline) {
+        preferOffline = false;
+        showAuthGate("Sign in with the same account on phone and PC, then use Sync / Recover.");
+        return;
+      }
+      showSyncPanel();
+    });
     on("menuBtn", toggleSidebar);
     on("scrim", closeSidebar);
     const menuBtn = $("#menuBtn");
