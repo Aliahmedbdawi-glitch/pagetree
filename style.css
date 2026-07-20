@@ -587,10 +587,12 @@ table.tbl { border-collapse: collapse; width: 100%; background: var(--surface); 
   border: 1px solid var(--line);
   color: var(--ink-soft);
   box-shadow: var(--shadow);
+  cursor: pointer;
 }
 .syncbadge.synced { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
 .syncbadge.syncing { color: #B07D12; }
-.syncbadge.offline { color: var(--ink-soft); }
+.syncbadge.offline, .syncbadge.local { color: var(--ink-soft); }
+.syncbadge.merged { color: #B07D12; border-color: color-mix(in srgb, #B07D12 35%, var(--line)); }
 
 /* ---------- mobile ---------- */
 @media (max-width: 760px) {

@@ -22,7 +22,11 @@ let sb = null;               // Supabase client
 let session = null;          // active auth session
 let cloudReady = false;      // schema reachable + logged in
 let cloudSaveTimer = null;
+let localSaveTimer = null;
 let localUpdatedAt = 0;
+let lastCloudSeenAt = 0;     // last cloud updatedAt we successfully fetched/pushed
+let localDirty = false;      // local edits not yet confirmed in cloud
+let cloudPushInFlight = false;
 let appUserId = null;
 let appStarting = null;      // in-flight startApp promise (single-flight)
 let preferOffline = false;   // user chose Continue offline — ignore cloud auth until they sign in
@@ -30,7 +34,7 @@ let preferOffline = false;   // user chose Continue offline — ignore cloud aut
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
 function newPage(title, icon) {
-  return { id: uid(), icon: icon || "📄", title: title || "Untitled", blocks: [], children: [] };
+  return { id: uid(), icon: icon || "📄", title: title || "Untitled", blocks: [], children: [], updatedAt: Date.now() };
 }
 function defaultWorkspace() {
   const p = newPage("My first project", "📁");
@@ -93,23 +97,171 @@ async function loadLocalBundle() {
   return {
     ws: data ? normalizeWorkspace(data) : null,
     updatedAt: meta?.updatedAt || 0,
+    lastCloudSeenAt: meta?.lastCloudSeenAt || 0,
+    dirty: !!meta?.dirty,
   };
 }
 async function loadWS() {
   const { ws } = await loadLocalBundle();
   return ws;
 }
-let saveTimer = null;
+async function persistLocalMeta() {
+  await idbPut(LOCAL_META_KEY, {
+    updatedAt: localUpdatedAt,
+    lastCloudSeenAt,
+    dirty: localDirty,
+  });
+}
+function stampCurrentPage() {
+  if (!ws || !currentPageId) return;
+  let hit = null;
+  walk(ws.pages, (p) => { if (p.id === currentPageId) { hit = p; return false; } });
+  if (hit) hit.updatedAt = Date.now();
+}
+async function flushLocalSave() {
+  if (!ws) return;
+  clearTimeout(localSaveTimer);
+  localSaveTimer = null;
+  stampCurrentPage();
+  localUpdatedAt = Date.now();
+  localDirty = true;
+  try {
+    await idbPut("workspace", ws);
+    await persistLocalMeta();
+  } catch (e) { console.error("local save failed", e); }
+}
 function save() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    localUpdatedAt = Date.now();
-    try {
-      await idbPut("workspace", ws);
-      await idbPut(LOCAL_META_KEY, { updatedAt: localUpdatedAt });
-    } catch (e) { console.error("local save failed", e); }
+  clearTimeout(localSaveTimer);
+  localSaveTimer = setTimeout(async () => {
+    await flushLocalSave();
     queueCloudSave();
   }, 250);
+}
+
+/** Index every page in a tree by id. */
+function indexPagesById(pages, map = new Map()) {
+  for (const p of pages || []) {
+    map.set(p.id, p);
+    indexPagesById(p.children, map);
+  }
+  return map;
+}
+
+function pageStamp(p) {
+  return (p && p.updatedAt) || 0;
+}
+
+/** Merge two same-id pages: keep newer content, union unique children. */
+function mergePageNode(a, b) {
+  if (!a) return JSON.parse(JSON.stringify(b));
+  if (!b) return JSON.parse(JSON.stringify(a));
+  const preferA = pageStamp(a) >= pageStamp(b);
+  const winner = preferA ? a : b;
+  const loser = preferA ? b : a;
+  const out = JSON.parse(JSON.stringify(winner));
+  const loserChildren = loser.children || [];
+  const winnerChildren = winner.children || [];
+  const loserById = new Map(loserChildren.map(c => [c.id, c]));
+  const merged = [];
+  const seen = new Set();
+  for (const c of winnerChildren) {
+    seen.add(c.id);
+    merged.push(loserById.has(c.id) ? mergePageNode(c, loserById.get(c.id)) : JSON.parse(JSON.stringify(c)));
+  }
+  for (const c of loserChildren) {
+    if (seen.has(c.id)) continue;
+    merged.push(JSON.parse(JSON.stringify(c)));
+  }
+  out.children = merged;
+  out.updatedAt = Math.max(pageStamp(a), pageStamp(b), out.updatedAt || 0);
+  return out;
+}
+
+/**
+ * Merge two workspaces so phone-only / PC-only pages are kept.
+ * Shared pages use per-page updatedAt when present; otherwise the newer workspace wins that node.
+ */
+function mergeWorkspaces(localWs, cloudWs, localAt, cloudAt) {
+  const a = normalizeWorkspace(JSON.parse(JSON.stringify(localWs)));
+  const b = normalizeWorkspace(JSON.parse(JSON.stringify(cloudWs)));
+  // If a side has no page stamps, stamp all its pages with its workspace time so LWW still works.
+  const stampAll = (pages, t) => {
+    for (const p of pages || []) {
+      if (!p.updatedAt) p.updatedAt = t;
+      stampAll(p.children, t);
+    }
+  };
+  stampAll(a.pages, localAt || 1);
+  stampAll(b.pages, cloudAt || 1);
+
+  const aIds = indexPagesById(a.pages);
+  const bIds = indexPagesById(b.pages);
+  const allIds = new Set([...aIds.keys(), ...bIds.keys()]);
+
+  // Build merged forest: start from union of root ids (local order, then cloud-only roots).
+  const rootIds = [];
+  const rootSeen = new Set();
+  for (const p of a.pages) { if (!rootSeen.has(p.id)) { rootSeen.add(p.id); rootIds.push(p.id); } }
+  for (const p of b.pages) { if (!rootSeen.has(p.id)) { rootSeen.add(p.id); rootIds.push(p.id); } }
+
+  // Pages that appear only as nested children on one side but missing on the other
+  // are included via mergePageNode. Pages orphaned (in index but not under any kept root)
+  // get appended as roots.
+  const mergedRoots = rootIds.map(id => {
+    const pa = aIds.get(id);
+    const pb = bIds.get(id);
+    if (pa && pb) return mergePageNode(pa, pb);
+    return JSON.parse(JSON.stringify(pa || pb));
+  });
+
+  const kept = new Set();
+  const mark = (pages) => {
+    for (const p of pages || []) { kept.add(p.id); mark(p.children); }
+  };
+  mark(mergedRoots);
+  for (const id of allIds) {
+    if (kept.has(id)) continue;
+    const pa = aIds.get(id);
+    const pb = bIds.get(id);
+    const node = pa && pb ? mergePageNode(pa, pb) : JSON.parse(JSON.stringify(pa || pb));
+    // Attach only the node itself as a root; children already in kept are pruned.
+    const prune = (p) => {
+      p.children = (p.children || []).filter(c => {
+        if (kept.has(c.id)) return false;
+        prune(c);
+        kept.add(c.id);
+        return true;
+      });
+      kept.add(p.id);
+    };
+    prune(node);
+    mergedRoots.push(node);
+  }
+
+  const expanded = { ...(b.expanded || {}), ...(a.expanded || {}) };
+  const taskOrder = [...(a.taskOrder || [])];
+  for (const id of (b.taskOrder || [])) if (!taskOrder.includes(id)) taskOrder.push(id);
+  return normalizeWorkspace({ version: 1, pages: mergedRoots, taskOrder, expanded });
+}
+
+function applyResolvedWorkspace(workspace, cloudAt, { dirty = false, render = true } = {}) {
+  ws = normalizeWorkspace(workspace);
+  localUpdatedAt = Math.max(localUpdatedAt, cloudAt || 0, Date.now());
+  if (cloudAt) lastCloudSeenAt = cloudAt;
+  localDirty = dirty;
+  currentPageId = (currentPageId && (() => {
+    let found = false;
+    walk(ws.pages, p => { if (p.id === currentPageId) { found = true; return false; } });
+    return found;
+  })()) ? currentPageId : (ws.pages[0]?.id || null);
+  idbPut("workspace", ws).catch(() => {});
+  persistLocalMeta().catch(() => {});
+  if (render) {
+    hideAuthGate();
+    updateAccountButton();
+    render();
+    updateUndoButtons();
+  }
 }
 
 function initSupabase() {
@@ -142,25 +294,87 @@ async function cloudPushWorkspace(userId, workspace) {
     data: workspace,
     updated_at: new Date().toISOString(),
   };
-  const { error } = await sb.from("workspaces").upsert(payload, { onConflict: "user_id" });
+  const { data, error } = await sb.from("workspaces")
+    .upsert(payload, { onConflict: "user_id" })
+    .select("updated_at")
+    .maybeSingle();
   if (error) throw error;
+  return data?.updated_at ? new Date(data.updated_at).getTime() : Date.now();
+}
+async function flushCloudSave() {
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = null;
+  if (!cloudReady || !session?.user?.id || !ws || preferOffline) return;
+  if (cloudPushInFlight) return;
+  cloudPushInFlight = true;
+  setSyncBadge("syncing");
+  try {
+    const pushedAt = await cloudPushWorkspace(session.user.id, ws);
+    lastCloudSeenAt = pushedAt;
+    localDirty = false;
+    await persistLocalMeta();
+    setSyncBadge("synced");
+  } catch (e) {
+    console.error("cloud save failed", e);
+    setSyncBadge("offline");
+  } finally {
+    cloudPushInFlight = false;
+  }
 }
 function queueCloudSave() {
-  if (!cloudReady || !session?.user?.id) return;
+  if (!cloudReady || !session?.user?.id || preferOffline) return;
   clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = setTimeout(async () => {
-    setSyncBadge("syncing");
-    try {
-      await cloudPushWorkspace(session.user.id, ws);
-      setSyncBadge("synced");
-    } catch (e) {
-      console.error("cloud save failed", e);
-      setSyncBadge("offline");
+  cloudSaveTimer = setTimeout(() => { flushCloudSave(); }, 600);
+}
+async function flushAllSaves() {
+  await flushLocalSave();
+  await flushCloudSave();
+}
+
+/**
+ * Decide local vs cloud. Never silently drop unique pages — merge when both sides changed.
+ */
+function reconcileLocalAndCloud(local, cloud) {
+  if (cloud && local.ws) {
+    const localAt = local.updatedAt || 0;
+    const cloudAt = cloud.updatedAt || 0;
+    const dirty = local.dirty || localDirty;
+    const lastSeen = local.lastCloudSeenAt || lastCloudSeenAt || 0;
+
+    // First sync after upgrade / unknown history: merge so neither device silently wins.
+    if (!lastSeen && localAt > 0) {
+      const merged = mergeWorkspaces(local.ws, cloud.ws, localAt, cloudAt);
+      return { ws: merged, cloudAt: Math.max(localAt, cloudAt), dirty: true, push: true, reason: "merged-fallback" };
     }
-  }, 600);
+
+    // Cloud unchanged since we last synced — keep local (and push if dirty).
+    if (dirty && cloudAt <= lastSeen) {
+      return { ws: local.ws, cloudAt: lastSeen, dirty: true, push: true, reason: "local-ahead" };
+    }
+    // Local unchanged since last sync — take cloud if newer or equal.
+    if (!dirty && cloudAt >= lastSeen) {
+      return { ws: cloud.ws, cloudAt, dirty: false, push: false, reason: "cloud-wins-clean" };
+    }
+    // Both changed: merge so unique pages/edits survive.
+    if (dirty && cloudAt > lastSeen) {
+      const merged = mergeWorkspaces(local.ws, cloud.ws, localAt, cloudAt);
+      return { ws: merged, cloudAt: Math.max(localAt, cloudAt), dirty: true, push: true, reason: "merged" };
+    }
+    // Fallback: merge rather than hard LWW replace.
+    const merged = mergeWorkspaces(local.ws, cloud.ws, localAt, cloudAt);
+    const preferPush = localAt > cloudAt || dirty;
+    return { ws: merged, cloudAt: Math.max(localAt, cloudAt), dirty: preferPush, push: preferPush, reason: "merged-fallback" };
+  }
+  if (cloud) {
+    return { ws: cloud.ws, cloudAt: cloud.updatedAt, dirty: false, push: false, reason: "cloud-only" };
+  }
+  if (local.ws) {
+    return { ws: local.ws, cloudAt: local.lastCloudSeenAt || 0, dirty: true, push: true, reason: "local-only" };
+  }
+  return { ws: defaultWorkspace(), cloudAt: 0, dirty: true, push: true, reason: "empty" };
 }
 async function resolveWorkspace(userId) {
-  let local = { ws: null, updatedAt: 0 };
+  let local = { ws: null, updatedAt: 0, lastCloudSeenAt: 0, dirty: false };
   try {
     local = await Promise.race([
       loadLocalBundle(),
@@ -169,6 +383,10 @@ async function resolveWorkspace(userId) {
   } catch (e) {
     console.warn("local load failed", e);
   }
+  lastCloudSeenAt = local.lastCloudSeenAt || 0;
+  localDirty = !!local.dirty;
+  localUpdatedAt = local.updatedAt || 0;
+
   let cloud = null;
   try {
     cloud = await Promise.race([
@@ -182,35 +400,45 @@ async function resolveWorkspace(userId) {
     setSyncBadge("offline");
     return local.ws || defaultWorkspace();
   }
-  if (cloud && local.ws) {
-    if (cloud.updatedAt >= local.updatedAt) {
-      localUpdatedAt = cloud.updatedAt;
-      await idbPut("workspace", cloud.ws);
-      await idbPut(LOCAL_META_KEY, { updatedAt: cloud.updatedAt });
-      return cloud.ws;
-    }
-    queueCloudSave();
-    return local.ws;
-  }
-  if (cloud) {
-    localUpdatedAt = cloud.updatedAt;
-    await idbPut("workspace", cloud.ws);
-    await idbPut(LOCAL_META_KEY, { updatedAt: cloud.updatedAt });
-    return cloud.ws;
-  }
-  if (local.ws) {
-    queueCloudSave();
-    return local.ws;
-  }
-  return defaultWorkspace();
+  const decided = reconcileLocalAndCloud(local, cloud);
+  lastCloudSeenAt = decided.cloudAt || lastCloudSeenAt;
+  localDirty = decided.dirty;
+  localUpdatedAt = Math.max(localUpdatedAt, decided.cloudAt || 0);
+  await idbPut("workspace", decided.ws);
+  await persistLocalMeta();
+  if (decided.push) queueCloudSave();
+  return decided.ws;
 }
 function setSyncBadge(state) {
   const badge = $("#syncBadge");
   if (!badge) return;
-  if (!cloudReady) { badge.hidden = true; return; }
+  // Always visible so missing sync is obvious (was hidden whenever cloudReady=false).
   badge.hidden = false;
   badge.className = "syncbadge " + state;
-  badge.textContent = state === "syncing" ? "Syncing…" : state === "synced" ? "Synced" : "Offline";
+  const signedIn = !!session?.user;
+  const labels = {
+    syncing: "Syncing…",
+    synced: "Synced",
+    offline: signedIn ? "Offline" : "Not syncing",
+    local: "This device only",
+    merged: "Merged devices",
+  };
+  badge.textContent = labels[state] || state;
+  badge.title = !signedIn || preferOffline
+    ? "Cloud sync is off. Click to sign in so phone and PC share pages."
+    : state === "synced"
+      ? "Workspace is synced to the cloud."
+      : state === "syncing"
+        ? "Uploading your latest edits…"
+        : state === "merged"
+          ? "Combined phone and PC changes. Uploading…"
+          : "Cannot reach the cloud. Edits stay on this device until you’re back online.";
+  badge.onclick = () => {
+    if (!session?.user || preferOffline) {
+      preferOffline = false;
+      showAuthGate("Sign in with the same account you use on your phone.");
+    }
+  };
 }
 function updateAccountButton() {
   const btn = $("#navAccount");
@@ -221,7 +449,9 @@ function updateAccountButton() {
     btn.textContent = email.split("@")[0];
     btn.title = email + " — click to sign out";
   } else {
-    btn.hidden = true;
+    btn.hidden = false;
+    btn.textContent = "Sign in";
+    btn.title = "Sign in to sync across devices";
   }
 }
 function showAuthGate(msg) {
@@ -231,7 +461,7 @@ function showAuthGate(msg) {
   gate.innerHTML = "";
   const card = el("div", "authcard");
   card.append(el("h2", null, "Sign in to Pagetree"));
-  card.append(el("p", "authsub", "Your pages sync across devices."));
+  card.append(el("p", "authsub", "Use the same email on phone and PC so pages sync. If you chose Continue offline before, sign in now to recover cloud pages."));
   const form = el("form", "authform");
   const email = el("input", "authinput");
   email.type = "email"; email.placeholder = "Email"; email.required = true; email.autocomplete = "email";
@@ -329,13 +559,17 @@ async function startOfflineApp() {
   appStarting = null;
   hideAuthGate();
   try {
-    ws = normalizeWorkspace((await loadWS()) || defaultWorkspace());
+    const local = await loadLocalBundle();
+    lastCloudSeenAt = local.lastCloudSeenAt || 0;
+    localDirty = true;
+    localUpdatedAt = local.updatedAt || Date.now();
+    ws = normalizeWorkspace(local.ws || defaultWorkspace());
   } catch {
     ws = defaultWorkspace();
   }
   currentPageId = ws.pages[0]?.id || null;
   updateAccountButton();
-  setSyncBadge("offline");
+  setSyncBadge("local");
   render();
   updateUndoButtons();
   // Clear persisted session so TOKEN_REFRESHED / reload don't pull us back into Loading.
@@ -353,7 +587,7 @@ async function startApp() {
   if (appUserId === userId && ws) {
     hideAuthGate();
     updateAccountButton();
-    setSyncBadge(cloudReady ? "synced" : "offline");
+    setSyncBadge(cloudReady ? (localDirty ? "syncing" : "synced") : "offline");
     render();
     return;
   }
@@ -364,7 +598,7 @@ async function startApp() {
     appUserId = userId;
     try {
       // Local-first: open the app immediately on refresh. Never flash the sign-in form.
-      let local = { ws: null, updatedAt: 0 };
+      let local = { ws: null, updatedAt: 0, lastCloudSeenAt: 0, dirty: false };
       try {
         local = await Promise.race([
           loadLocalBundle(),
@@ -375,8 +609,11 @@ async function startApp() {
       }
       if (preferOffline) return;
 
+      lastCloudSeenAt = local.lastCloudSeenAt || 0;
+      localDirty = !!local.dirty;
+      localUpdatedAt = local.updatedAt || 0;
+
       if (local.ws) {
-        localUpdatedAt = local.updatedAt || 0;
         showAppFromWorkspace(local.ws);
         setSyncBadge("syncing");
       } else {
@@ -393,22 +630,33 @@ async function startApp() {
         ]);
         cloudReady = true;
         if (preferOffline) return;
-        if (cloud) {
-          if (!local.ws || cloud.updatedAt >= (local.updatedAt || 0)) {
-            localUpdatedAt = cloud.updatedAt;
-            await idbPut("workspace", cloud.ws);
-            await idbPut(LOCAL_META_KEY, { updatedAt: cloud.updatedAt });
-            showAppFromWorkspace(cloud.ws);
-          } else {
-            queueCloudSave();
-          }
-        } else if (local.ws) {
-          queueCloudSave();
-        } else {
-          // Keep the default workspace we already showed; push it up.
-          queueCloudSave();
+
+        // Re-read local in case the user typed while we were fetching.
+        let latestLocal = local;
+        try { latestLocal = await loadLocalBundle(); } catch (_) {}
+        // Prefer in-memory ws if it's newer than what IDB had at start.
+        if (ws && localDirty) {
+          latestLocal = {
+            ws,
+            updatedAt: localUpdatedAt,
+            lastCloudSeenAt,
+            dirty: true,
+          };
         }
-        setSyncBadge("synced");
+
+        const decided = reconcileLocalAndCloud(latestLocal, cloud);
+        const wasMerged = decided.reason === "merged" || decided.reason === "merged-fallback";
+        applyResolvedWorkspace(decided.ws, decided.cloudAt, { dirty: decided.dirty, render: true });
+        if (decided.push) {
+          setSyncBadge(wasMerged ? "merged" : "syncing");
+          await flushCloudSave();
+        } else {
+          setSyncBadge("synced");
+        }
+        if (wasMerged) {
+          // Brief "Merged devices" then settle to Synced after push.
+          setTimeout(() => { if (cloudReady && !localDirty) setSyncBadge("synced"); }, 2500);
+        }
       } catch (e) {
         console.warn("cloud load failed", e);
         cloudReady = false;
@@ -2590,7 +2838,11 @@ function toggleSidebar() {
     on("navUndo", undo);
     on("navRedo", redo);
     on("navAccount", async () => {
-      if (!session) return;
+      if (!session?.user || preferOffline) {
+        preferOffline = false;
+        showAuthGate("Sign in with the same account you use on your phone.");
+        return;
+      }
       if (!confirm("Sign out of Pagetree?")) return;
       try { await sb?.auth.signOut(); } catch (e) { console.warn(e); }
       await handleSignedOut();
@@ -2615,7 +2867,18 @@ function toggleSidebar() {
       else if (e.key === "y" || (e.key === "z" && e.shiftKey) || (e.key === "Z" && e.shiftKey)) { e.preventDefault(); redo(); }
     });
 
-    window.addEventListener("online", () => { if (session) queueCloudSave(); });
+    // Flush pending edits when leaving the tab (phone home button / PC close).
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushAllSaves();
+    });
+    window.addEventListener("pagehide", () => { flushAllSaves(); });
+    window.addEventListener("online", () => {
+      if (session?.user && !preferOffline) {
+        cloudReady = true;
+        flushCloudSave();
+      }
+    });
+    window.addEventListener("offline", () => setSyncBadge(session?.user ? "offline" : "local"));
 
     if (sb) {
       sb.auth.onAuthStateChange(async (event, next) => {
