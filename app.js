@@ -759,8 +759,32 @@ function startEdit(key) {
 function endEdit() {
   editKey = null;
 }
+let savedFormatSelection = null;
+
+function saveFormatSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) { savedFormatSelection = null; return; }
+  savedFormatSelection = sel.getRangeAt(0).cloneRange();
+}
+function restoreFormatSelection() {
+  if (!savedFormatSelection) return false;
+  const sel = window.getSelection();
+  if (!sel) return false;
+  sel.removeAllRanges();
+  sel.addRange(savedFormatSelection);
+  return true;
+}
+function textBlockFromNode(node) {
+  if (!node) return null;
+  const el = node.nodeType === 3 ? node.parentElement?.closest(".textblock") : node.closest?.(".textblock");
+  return el || null;
+}
 function activeTextBlock() {
-  const el = document.activeElement?.closest?.(".textblock");
+  let el = document.activeElement?.closest?.(".textblock");
+  if (!el) {
+    const sel = window.getSelection();
+    el = textBlockFromNode(sel?.anchorNode);
+  }
   if (!el || !currentPageId) return null;
   const hit = findPage(currentPageId);
   if (!hit) return null;
@@ -771,6 +795,8 @@ function applyFormat(fn) {
   const hit = activeTextBlock();
   if (!hit) return;
   pushUndo();
+  hit.el.focus();
+  restoreFormatSelection();
   fn();
   hit.block.html = hit.el.innerHTML;
   save();
@@ -869,19 +895,18 @@ function mmSingleSelected() {
 function mmSyncMapToolbar() {
   document.querySelectorAll(".mmap-node").forEach(node => {
     node.classList.toggle("selected", mapSelectedIds.has(node.dataset.pageId));
+    node.classList.toggle("selecting", mapSelectMode);
   });
   const slot = $("#mmMapToolbar");
   if (!slot) return;
   slot.innerHTML = "";
   slot.append(mmBuildMapToolbar());
-  if (!mapSelectedIds.size) mapSelectMode = false;
 }
 
 function mmToggleSelect(pageId, forceOn) {
   if (forceOn) mapSelectedIds.add(pageId);
   else if (mapSelectedIds.has(pageId)) mapSelectedIds.delete(pageId);
   else mapSelectedIds.add(pageId);
-  if (!mapSelectedIds.size) mapSelectMode = false;
   mmSyncMapToolbar();
 }
 
@@ -1582,6 +1607,48 @@ function buildAddBlockMenu(page) {
 }
 
 const TEXT_COLORS = ["#22303A", "#0E7C66", "#B3402E", "#B07D12", "#2456A6"];
+const TEXT_SIZES = [14, 16, 18, 22, 28];
+
+function wrapSelectionStyle(prop, value) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  const span = document.createElement("span");
+  span.style[prop] = value;
+  try {
+    range.surroundContents(span);
+  } catch {
+    const contents = range.extractContents();
+    span.appendChild(contents);
+    range.insertNode(span);
+  }
+  sel.removeAllRanges();
+  const nr = document.createRange();
+  nr.selectNodeContents(span);
+  sel.addRange(nr);
+}
+function currentSelectionFontSize() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return 16;
+  const node = sel.anchorNode?.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+  if (!node || !(node instanceof Element)) return 16;
+  const px = parseFloat(getComputedStyle(node).fontSize);
+  if (!Number.isFinite(px)) return 16;
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < TEXT_SIZES.length; i++) {
+    const dist = Math.abs(TEXT_SIZES[i] - px);
+    if (dist < bestDist) { bestDist = dist; best = i; }
+  }
+  return best;
+}
+function changeTextSize(delta) {
+  applyFormat(() => {
+    const idx = currentSelectionFontSize();
+    const next = Math.max(0, Math.min(TEXT_SIZES.length - 1, idx + delta));
+    wrapSelectionStyle("fontSize", TEXT_SIZES[next] + "px");
+  });
+}
 
 function buildColorMenu() {
   const wrap = el("div", "colormenu-wrap");
@@ -1590,6 +1657,7 @@ function buildColorMenu() {
   btn.setAttribute("aria-label", "Text color");
   btn.setAttribute("aria-expanded", "false");
   btn.setAttribute("aria-haspopup", "true");
+  btn.onmousedown = e => e.preventDefault();
   const dot = el("span", "color-trigger-dot");
   btn.append(dot);
   const menu = el("div", "colormenu");
@@ -1613,6 +1681,7 @@ function buildColorMenu() {
   btn.onclick = e => {
     e.stopPropagation();
     const opening = menu.hidden;
+    if (opening) saveFormatSelection();
     document.querySelectorAll(".colormenu").forEach(m => { m.hidden = true; });
     document.querySelectorAll(".color-trigger").forEach(b => {
       b.setAttribute("aria-expanded", "false");
@@ -1655,6 +1724,8 @@ function buildDocToolbar(page, path) {
   fmt.append(
     cmd("B", "Bold", () => applyFormat(() => document.execCommand("bold"))),
     cmd("S̶", "Strikethrough", () => applyFormat(() => document.execCommand("strikeThrough"))),
+    cmd("A−", "Smaller text", () => changeTextSize(-1)),
+    cmd("A+", "Larger text", () => changeTextSize(1)),
     cmd("•", "Bulleted list", () => applyFormat(() => document.execCommand("insertUnorderedList"))),
     cmd("1.", "Numbered list", () => applyFormat(() => document.execCommand("insertOrderedList"))),
     cmd("📄", "Turn into page", () => turnSelectionIntoPage()),
@@ -1780,12 +1851,30 @@ function turnSelectionIntoPage() {
   if (!hit) return;
   const { page } = hit;
   const sel = window.getSelection();
-  const title = (sel?.toString() || "").trim() || "Untitled";
   const node = sel?.anchorNode;
-  const textEl = node?.nodeType === 3 ? node.parentElement?.closest(".textblock") : node?.closest?.(".textblock");
+  const textEl = textBlockFromNode(node);
   if (!textEl) return;
   const blockIdx = page.blocks.findIndex(b => b.id === textEl.dataset.blk);
   if (blockIdx < 0 || page.blocks[blockIdx].type !== "text") return;
+
+  const listItems = getListItemsFromSelection(sel, textEl);
+  if (listItems.length) {
+    record(() => {
+      let afterIdx = blockIdx;
+      for (const { li, text } of listItems) {
+        li.remove();
+        addSubPage(page, { title: text || "Untitled", afterBlockIndex: afterIdx, noSave: true });
+        afterIdx++;
+      }
+      textEl.querySelectorAll("ul, ol").forEach(list => {
+        if (!list.querySelector("li")) list.remove();
+      });
+      page.blocks[blockIdx].html = textEl.innerHTML;
+    });
+    return;
+  }
+
+  const title = (sel?.toString() || "").trim() || "Untitled";
   record(() => {
     if (sel && !sel.isCollapsed) {
       document.execCommand("delete", false, null);
@@ -1793,6 +1882,50 @@ function turnSelectionIntoPage() {
     }
     addSubPage(page, { title, afterBlockIndex: blockIdx, noSave: true });
   });
+}
+
+function rangeIntersectsNode(range, node) {
+  const nr = document.createRange();
+  nr.selectNodeContents(node);
+  return range.compareBoundaryPoints(Range.END_TO_START, nr) < 0 &&
+    range.compareBoundaryPoints(Range.START_TO_END, nr) > 0;
+}
+function getListItemsFromSelection(sel, textEl) {
+  if (!sel || sel.rangeCount === 0) return [];
+  const range = sel.getRangeAt(0);
+  const items = [];
+  const seen = new Set();
+  for (const list of textEl.querySelectorAll("ul, ol")) {
+    for (const li of list.querySelectorAll(":scope > li")) {
+      if (seen.has(li)) continue;
+      const intersects = sel.containsNode
+        ? sel.containsNode(li, true)
+        : rangeIntersectsNode(range, li);
+      if (!intersects) continue;
+      const text = (li.textContent || "").trim();
+      if (!text) continue;
+      seen.add(li);
+      items.push({ li, list, text });
+    }
+  }
+  return items;
+}
+
+const TABLE_FONT_MIN = 10;
+const TABLE_FONT_BASE = 16;
+
+function fitTableCell(inp) {
+  inp.style.fontSize = TABLE_FONT_BASE + "px";
+  let size = TABLE_FONT_BASE;
+  while (size > TABLE_FONT_MIN && inp.scrollWidth > inp.clientWidth) {
+    size--;
+    inp.style.fontSize = size + "px";
+  }
+}
+function wireTableInput(inp, onChange) {
+  const fit = () => requestAnimationFrame(() => fitTableCell(inp));
+  inp.oninput = () => { onChange(); save(); fit(); };
+  fit();
 }
 
 /* checklist block */
@@ -1852,7 +1985,7 @@ function renderTable(b) {
     const inp = autoDir(el("input")); inp.value = c;
     inp.onfocus = () => { startEdit("tbl:" + b.id + ":h:" + ci); setSelectedBlock(b.id); };
     inp.onblur = () => endEdit();
-    inp.oninput = () => { b.columns[ci] = inp.value; save(); };
+    wireTableInput(inp, () => { b.columns[ci] = inp.value; });
     th.append(inp); thr.append(th);
   });
   t.append(thr);
@@ -1863,7 +1996,7 @@ function renderTable(b) {
       const inp = autoDir(el("input")); inp.value = cell;
       inp.onfocus = () => { startEdit("tbl:" + b.id + ":r:" + ri + ":" + ci); setSelectedBlock(b.id); };
       inp.onblur = () => endEdit();
-      inp.oninput = () => { row[ci] = inp.value; save(); };
+      wireTableInput(inp, () => { row[ci] = inp.value; });
       td.append(inp); tr.append(td);
     });
     t.append(tr);
@@ -2502,16 +2635,27 @@ function mmAttachNodePointer(wrap, page) {
 
 function mmBuildMapToolbar() {
   const bar = el("div", "mmap-toolbar-inner");
+  if (mapSelectMode) bar.classList.add("selecting");
   const single = mmSingleSelected();
   const hasSel = mapSelectedIds.size > 0;
-  const label = single
-    ? `${single.icon} ${single.title || "Untitled"}`
-    : hasSel
-      ? `${mapSelectedIds.size} selected`
-      : "Select a node";
+  const label = mapSelectMode && !hasSel
+    ? "Selecting… tap nodes"
+    : single
+      ? `${single.icon} ${single.title || "Untitled"}`
+      : hasSel
+        ? `${mapSelectedIds.size} selected`
+        : "Select a node";
   bar.append(el("span", "mmap-tblabel", label));
 
   const actions = el("div", "mmap-tbactions");
+
+  const selectBtn = el("button", "mmap-tbbtn" + (mapSelectMode ? " active" : ""), mapSelectMode ? "Done" : "Select");
+  selectBtn.title = mapSelectMode ? "Exit select mode" : "Select multiple nodes";
+  selectBtn.onclick = () => {
+    mapSelectMode = !mapSelectMode;
+    mmSyncMapToolbar();
+  };
+  actions.append(selectBtn);
 
   const addChild = el("button", "mmap-tbbtn", "Child");
   addChild.title = "Add sub-page";
