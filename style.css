@@ -115,6 +115,52 @@ input, textarea { font: inherit; color: inherit; }
 .bigicon:hover { background: var(--accent-soft); }
 .titleinput { width: 100%; font-size: 2.5rem; font-weight: 700; border: none; background: none; outline: none; padding: 2px 0; min-width: 0; line-height: 1.2; }
 
+/* ---------- page shortcut selection bar ---------- */
+.plink-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  margin: 0 0 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.plink-toolbar.selecting {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent), var(--shadow);
+}
+.plink-toolbar.empty { opacity: .65; }
+.plink-tblabel {
+  flex: 1;
+  min-width: 0;
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.plink-tbactions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.plink-toolbar .tbtn.active {
+  background: var(--accent);
+  color: var(--surface);
+  border-color: var(--accent);
+}
+.pagelink .plink-check {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent);
+  margin: 0 2px 0 0;
+}
+.blockrow.pagelink-row.selecting .pagelink { cursor: pointer; }
+.blockrow.pagelink-row.plink-selected .pagelink .pagelink-label { color: var(--accent); }
+
 /* ---------- document toolbar ---------- */
 .doctoolbar {
   position: sticky;

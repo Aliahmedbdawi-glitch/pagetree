@@ -16,6 +16,8 @@ let mapSelectedIds = new Set();
 let mapSelectMode = false;
 let mapDrag = null;          // active pointer drag state
 let mmLastTap = { id: null, t: 0 };
+let pageLinkSelectMode = false;
+let pageLinkSelectedIds = new Set();
 let editKey = null;          // active typing session (one undo step per focus)
 let selectedBlockId = null;  // block targeted by doc toolbar actions
 let sb = null;               // Supabase client
@@ -1639,9 +1641,181 @@ function openPage(id) {
   currentPageId = id; view = "page";
   mapRenameId = null;
   clearMapSelection();
+  clearPageLinkSelection();
   selectedBlockId = null;
   closeSidebar();
   render();
+}
+
+function clearPageLinkSelection() {
+  pageLinkSelectedIds.clear();
+  pageLinkSelectMode = false;
+}
+
+function pageHasPageLinks(page) {
+  return page.blocks.some(b => b.type === "page");
+}
+
+function togglePageLinkSelect(blockId) {
+  if (pageLinkSelectedIds.has(blockId)) pageLinkSelectedIds.delete(blockId);
+  else pageLinkSelectedIds.add(blockId);
+  syncPageLinkSelectionUI();
+}
+
+function syncPageLinkSelectionUI() {
+  document.querySelectorAll(".blockrow.pagelink-row").forEach(row => {
+    const blkId = row.querySelector(".block")?.dataset.blk;
+    if (!blkId) return;
+    const on = pageLinkSelectedIds.has(blkId);
+    row.classList.toggle("plink-selected", on);
+    const wrap = row.querySelector(".block");
+    if (wrap) wrap.classList.toggle("selected", on);
+    const plink = row.querySelector(".pagelink");
+    if (plink) {
+      plink.classList.toggle("selected", on);
+      plink.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    const cb = row.querySelector(".plink-check");
+    if (cb) cb.checked = on;
+  });
+  updatePageLinkToolbar();
+}
+
+function updatePageLinkToolbar() {
+  const bar = document.querySelector(".plink-toolbar");
+  if (!bar) return;
+  const hit = findPage(currentPageId);
+  if (!hit) return;
+  const { page } = hit;
+  const label = bar.querySelector(".plink-tblabel");
+  const count = pageLinkSelectedIds.size;
+  if (label) {
+    if (pageLinkSelectMode && !count) label.textContent = "Tap shortcuts to select";
+    else if (count === 1) {
+      const b = page.blocks.find(x => x.id === [...pageLinkSelectedIds][0]);
+      const target = b?.type === "page" ? findPage(b.pageId)?.page : null;
+      label.textContent = target ? `${target.icon} ${target.title || "Untitled"}` : "1 selected";
+    } else if (count > 1) label.textContent = `${count} selected`;
+    else label.textContent = "Page shortcuts";
+  }
+  const open = bar.querySelector('[data-action="plink-open"]');
+  const up = bar.querySelector('[data-action="plink-up"]');
+  const dn = bar.querySelector('[data-action="plink-down"]');
+  const rm = bar.querySelector('[data-action="plink-remove"]');
+  const clr = bar.querySelector('[data-action="plink-clear"]');
+  if (open) open.disabled = count !== 1;
+  if (up) up.disabled = count !== 1 || !canMovePageLink(page, -1);
+  if (dn) dn.disabled = count !== 1 || !canMovePageLink(page, 1);
+  if (rm) rm.disabled = !count;
+  if (clr) clr.disabled = !count;
+}
+
+function canMovePageLink(page, dir) {
+  if (pageLinkSelectedIds.size !== 1) return false;
+  const blockId = [...pageLinkSelectedIds][0];
+  const idx = page.blocks.findIndex(b => b.id === blockId);
+  if (idx < 0) return false;
+  const newIdx = idx + dir;
+  return newIdx >= 0 && newIdx < page.blocks.length;
+}
+
+function moveSelectedPageLink(page, dir) {
+  if (pageLinkSelectedIds.size !== 1) return;
+  const blockId = [...pageLinkSelectedIds][0];
+  const idx = page.blocks.findIndex(b => b.id === blockId);
+  if (idx < 0 || page.blocks[idx].type !== "page") return;
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= page.blocks.length) return;
+  const b = page.blocks[idx];
+  record(() => {
+    page.blocks.splice(idx, 1);
+    page.blocks.splice(newIdx, 0, b);
+    syncChildrenOrderFromBlocks(page);
+  });
+}
+
+function removeSelectedPageLinks(page) {
+  const ids = [...pageLinkSelectedIds];
+  if (!ids.length) return;
+  const msg = ids.length === 1
+    ? (() => {
+        const b = page.blocks.find(x => x.id === ids[0]);
+        const target = b?.type === "page" ? findPage(b.pageId)?.page : null;
+        const label = target ? `${target.icon} ${target.title || "Untitled"}`.trim() : "this shortcut";
+        return `Remove shortcut to ${label}? The page will stay in the sidebar.`;
+      })()
+    : `Remove ${ids.length} shortcuts? The pages will stay in the sidebar.`;
+  if (!confirm(msg)) return;
+  record(() => {
+    const set = new Set(ids);
+    page.blocks = page.blocks.filter(b => !set.has(b.id));
+    pageLinkSelectedIds.clear();
+  });
+}
+
+function buildPageLinkToolbar(page) {
+  const bar = el("div", "plink-toolbar");
+  if (pageLinkSelectMode) bar.classList.add("selecting");
+  if (!pageHasPageLinks(page)) bar.classList.add("empty");
+
+  const label = el("span", "plink-tblabel", "Page shortcuts");
+  bar.append(label);
+
+  const actions = el("div", "plink-tbactions");
+  const btn = (text, title, action, fn) => {
+    const b = el("button", "tbtn", text);
+    b.dataset.action = action;
+    b.title = title;
+    b.onclick = fn;
+    return b;
+  };
+
+  const selectBtn = el("button", "tbtn" + (pageLinkSelectMode ? " active" : ""), pageLinkSelectMode ? "Done" : "Select");
+  selectBtn.dataset.action = "plink-select";
+  selectBtn.title = pageLinkSelectMode ? "Exit selection mode" : "Select page shortcuts";
+  selectBtn.disabled = !pageHasPageLinks(page);
+  selectBtn.onclick = () => {
+    pageLinkSelectMode = !pageLinkSelectMode;
+    if (!pageLinkSelectMode) pageLinkSelectedIds.clear();
+    render();
+  };
+  actions.append(selectBtn);
+
+  const openBtn = btn("Open", "Open selected page", "plink-open", () => {
+    const blockId = [...pageLinkSelectedIds][0];
+    const b = page.blocks.find(x => x.id === blockId);
+    if (b?.type === "page") openPage(b.pageId);
+  });
+  openBtn.hidden = !pageLinkSelectMode;
+  openBtn.disabled = pageLinkSelectedIds.size !== 1;
+  actions.append(openBtn);
+
+  const upBtn = btn("↑", "Move up", "plink-up", () => moveSelectedPageLink(page, -1));
+  upBtn.hidden = !pageLinkSelectMode;
+  upBtn.disabled = true;
+  actions.append(upBtn);
+
+  const dnBtn = btn("↓", "Move down", "plink-down", () => moveSelectedPageLink(page, 1));
+  dnBtn.hidden = !pageLinkSelectMode;
+  dnBtn.disabled = true;
+  actions.append(dnBtn);
+
+  const rmBtn = btn("Remove", "Remove shortcuts (pages stay in sidebar)", "plink-remove", () => removeSelectedPageLinks(page));
+  rmBtn.hidden = !pageLinkSelectMode;
+  rmBtn.disabled = !pageLinkSelectedIds.size;
+  actions.append(rmBtn);
+
+  const clrBtn = btn("Clear", "Clear selection", "plink-clear", () => {
+    pageLinkSelectedIds.clear();
+    syncPageLinkSelectionUI();
+  });
+  clrBtn.hidden = !pageLinkSelectMode;
+  clrBtn.disabled = !pageLinkSelectedIds.size;
+  actions.append(clrBtn);
+
+  bar.append(actions);
+  requestAnimationFrame(() => updatePageLinkToolbar());
+  return bar;
 }
 
 function syncChildrenOrderFromBlocks(page) {
@@ -1682,26 +1856,13 @@ function getInsertIndex(page) {
 function setSelectedBlock(blockId) {
   selectedBlockId = blockId;
   document.querySelectorAll(".block.selected").forEach(n => n.classList.remove("selected"));
-  document.querySelectorAll(".pagelink").forEach(n => {
-    n.classList.remove("selected");
-    n.setAttribute("aria-selected", "false");
-  });
   const node = document.querySelector(`.block[data-blk="${blockId}"]`);
   if (node) node.classList.add("selected");
-  const plink = document.querySelector(`.block[data-blk="${blockId}"] .pagelink`);
-  if (plink) {
-    plink.classList.add("selected");
-    plink.setAttribute("aria-selected", "true");
-  }
   updateDocToolbar();
 }
 function clearSelectedBlock() {
   selectedBlockId = null;
   document.querySelectorAll(".block.selected").forEach(n => n.classList.remove("selected"));
-  document.querySelectorAll(".pagelink").forEach(n => {
-    n.classList.remove("selected");
-    n.setAttribute("aria-selected", "false");
-  });
   updateDocToolbar();
 }
 function updateDocToolbar() {
@@ -1712,23 +1873,12 @@ function updateDocToolbar() {
   const { page } = hit;
   const idx = getSelectedBlockIndex(page);
   const hasBlock = idx >= 0;
-  const block = hasBlock ? page.blocks[idx] : null;
-  const isPageLink = block?.type === "page";
   const up = toolbar.querySelector('[data-action="move-up"]');
   const dn = toolbar.querySelector('[data-action="move-down"]');
   const rm = toolbar.querySelector('[data-action="delete-block"]');
-  const open = toolbar.querySelector('[data-action="open-page"]');
   if (up) up.disabled = !hasBlock || idx === 0;
   if (dn) dn.disabled = !hasBlock || idx >= page.blocks.length - 1;
-  if (rm) {
-    rm.disabled = !hasBlock;
-    rm.textContent = isPageLink ? "Remove" : "✕";
-    rm.title = isPageLink ? "Remove shortcut (page stays in sidebar)" : "Delete block";
-  }
-  if (open) {
-    open.hidden = !isPageLink;
-    open.disabled = !isPageLink || !findPage(block?.pageId);
-  }
+  if (rm) rm.disabled = !hasBlock;
 }
 function moveSelectedBlock(page, dir) {
   const idx = getSelectedBlockIndex(page);
@@ -1745,12 +1895,6 @@ function moveSelectedBlock(page, dir) {
 function deleteSelectedBlock(page) {
   const idx = getSelectedBlockIndex(page);
   if (idx < 0) return;
-  const b = page.blocks[idx];
-  if (b.type === "page") {
-    const target = findPage(b.pageId);
-    const label = target ? `${target.page.icon} ${target.page.title || "Untitled"}`.trim() : "this page";
-    if (!confirm(`Remove shortcut to ${label}? The page will stay in the sidebar.`)) return;
-  }
   record(() => {
     page.blocks.splice(idx, 1);
     selectedBlockId = null;
@@ -1797,10 +1941,10 @@ function renderPage(main) {
   title.oninput = () => { page.title = title.value; save(); renderTree(); };
   head.append(icon, title);
   doc.append(head);
-
+  doc.append(buildPageLinkToolbar(page));
   doc.append(buildDocToolbar(page, path));
 
-  const flow = el("div", "blocksflow");
+  const flow = el("div", "blocksflow" + (pageLinkSelectMode ? " selecting" : ""));
   page.blocks.forEach((b, i) => flow.append(renderBlock(page, b, i)));
   doc.append(flow);
 
@@ -2024,15 +2168,7 @@ function buildDocToolbar(page, path) {
     btn.onclick = fn;
     return btn;
   };
-  const openPageBtn = act("Open", "Open page", "open-page", () => {
-    const idx = getSelectedBlockIndex(page);
-    if (idx < 0) return;
-    const b = page.blocks[idx];
-    if (b.type === "page") openPage(b.pageId);
-  });
-  openPageBtn.hidden = true;
   blockActs.append(
-    openPageBtn,
     act("↑", "Move up", "move-up", () => moveSelectedBlock(page, -1)),
     act("↓", "Move down", "move-down", () => moveSelectedBlock(page, 1)),
     act("✕", "Delete block", "delete-block", () => deleteSelectedBlock(page)),
@@ -2085,32 +2221,37 @@ function pickImageAt(page, index, historyPushed = false) {
 function renderBlock(page, b, idx) {
   const isPageLink = b.type === "page";
   const row = el("div", "blockrow" + (isPageLink ? " pagelink-row" : ""));
+  if (isPageLink) {
+    row.classList.toggle("plink-selected", pageLinkSelectedIds.has(b.id));
+    row.classList.toggle("selecting", pageLinkSelectMode);
+  }
   const wrap = el("div", "block");
   wrap.dataset.blk = b.id;
-  if (selectedBlockId === b.id) wrap.classList.add("selected");
+  if (!isPageLink && selectedBlockId === b.id) wrap.classList.add("selected");
+  if (isPageLink && pageLinkSelectedIds.has(b.id)) wrap.classList.add("selected");
 
-  if (isPageLink) {
+  if (isPageLink && pageLinkSelectMode) {
     const grab = el("span", "grab", "⠿");
     grab.title = "Drag to reorder";
     row.draggable = true;
     row.ondragstart = e => { row.classList.add("dragging"); e.dataTransfer.setData("text/plain", b.id); };
     row.ondragend = () => row.classList.remove("dragging");
     row.prepend(grab);
+    row.ondragover = e => { e.preventDefault(); row.classList.add("dropover"); };
+    row.ondragleave = () => row.classList.remove("dropover");
+    row.ondrop = e => {
+      e.preventDefault();
+      row.classList.remove("dropover");
+      const dragId = e.dataTransfer.getData("text/plain");
+      if (!dragId || dragId === b.id) return;
+      movePageLinkBlock(page, dragId, b.id);
+    };
   }
-
-  row.ondragover = e => { e.preventDefault(); row.classList.add("dropover"); };
-  row.ondragleave = () => row.classList.remove("dropover");
-  row.ondrop = e => {
-    e.preventDefault();
-    row.classList.remove("dropover");
-    const dragId = e.dataTransfer.getData("text/plain");
-    if (!dragId || dragId === b.id) return;
-    movePageLinkBlock(page, dragId, b.id);
-  };
 
   wrap.onclick = e => {
     if (e.target.closest("button, input, .textblock, .tasktext, .tbl input")) return;
-    if (e.target.closest(".pagelink")) return;
+    if (e.target.closest(".pagelink, .plink-check")) return;
+    if (isPageLink) return;
     setSelectedBlock(b.id);
   };
 
@@ -2125,24 +2266,41 @@ function renderBlock(page, b, idx) {
 
 function renderPageLink(b) {
   const row = autoDir(el("button", "pagelink"));
-  const selected = selectedBlockId === b.id;
+  const selected = pageLinkSelectedIds.has(b.id);
   row.setAttribute("aria-selected", selected ? "true" : "false");
   if (selected) row.classList.add("selected");
   const hit = findPage(b.pageId);
   if (!hit) {
     row.classList.add("missing");
+    if (pageLinkSelectMode) {
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.className = "plink-check";
+      cb.checked = selected;
+      cb.onclick = e => e.stopPropagation();
+      row.prepend(cb);
+      row.onclick = e => { e.stopPropagation(); togglePageLinkSelect(b.id); };
+    }
     row.append(el("span", "pagelink-icon", "📄"), autoDir(el("span", "pagelink-label", "Missing page")));
-    row.disabled = true;
-    row.onclick = e => { e.stopPropagation(); setSelectedBlock(b.id); };
+    row.disabled = !pageLinkSelectMode;
     return row;
   }
   const { page: target } = hit;
+  if (pageLinkSelectMode) {
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.className = "plink-check";
+    cb.checked = selected;
+    cb.onclick = e => e.stopPropagation();
+    row.prepend(cb);
+    row.onclick = e => { e.stopPropagation(); togglePageLinkSelect(b.id); };
+  } else {
+    row.onclick = () => openPage(b.pageId);
+  }
   row.append(
     el("span", "pagelink-icon", target.icon),
     autoDir(el("span", "pagelink-label", target.title)),
   );
-  row.onclick = e => { e.stopPropagation(); setSelectedBlock(b.id); };
-  row.ondblclick = e => { e.stopPropagation(); openPage(b.pageId); };
   return row;
 }
 
@@ -3290,8 +3448,9 @@ function toggleSidebar() {
       if (node) node.onclick = fn;
     };
 
-    on("navTasks", () => { clearMapSelection(); view = "tasks"; closeSidebar(); render(); });
+    on("navTasks", () => { clearMapSelection(); clearPageLinkSelection(); view = "tasks"; closeSidebar(); render(); });
     on("navMap", () => {
+      clearPageLinkSelection();
       view = "map";
       mapZoomAuto = true;
       mapScopeId = currentPageId || null;
@@ -3330,7 +3489,7 @@ function toggleSidebar() {
     on("scrim", closeSidebar);
     const menuBtn = $("#menuBtn");
     if (menuBtn) menuBtn.setAttribute("aria-expanded", "false");
-    on("brand", () => { view = "map"; mapZoomAuto = true; mapScopeId = null; render(); });
+    on("brand", () => { clearPageLinkSelection(); view = "map"; mapZoomAuto = true; mapScopeId = null; render(); });
 
     document.addEventListener("keydown", e => {
       if (e.ctrlKey || e.metaKey) {
@@ -3338,19 +3497,25 @@ function toggleSidebar() {
         else if (e.key === "y" || (e.key === "z" && e.shiftKey) || (e.key === "Z" && e.shiftKey)) { e.preventDefault(); redo(); }
         return;
       }
-      if (view !== "page" || !selectedBlockId) return;
+      if (view !== "page" || !pageLinkSelectMode || !pageLinkSelectedIds.size) return;
       if (e.target.closest("input, textarea, [contenteditable=true]")) return;
       const hit = findPage(currentPageId);
       if (!hit) return;
       const { page } = hit;
-      const idx = getSelectedBlockIndex(page);
-      if (idx < 0) return;
-      const block = page.blocks[idx];
-      if (block.type !== "page") return;
-      if (e.key === "Enter") { e.preventDefault(); openPage(block.pageId); }
-      else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelectedBlock(page); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); moveSelectedBlock(page, -1); }
-      else if (e.key === "ArrowDown") { e.preventDefault(); moveSelectedBlock(page, 1); }
+      if (e.key === "Enter" && pageLinkSelectedIds.size === 1) {
+        const blockId = [...pageLinkSelectedIds][0];
+        const block = page.blocks.find(b => b.id === blockId);
+        if (block?.type === "page") { e.preventDefault(); openPage(block.pageId); }
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        removeSelectedPageLinks(page);
+      } else if (e.key === "ArrowUp" && pageLinkSelectedIds.size === 1) {
+        e.preventDefault();
+        moveSelectedPageLink(page, -1);
+      } else if (e.key === "ArrowDown" && pageLinkSelectedIds.size === 1) {
+        e.preventDefault();
+        moveSelectedPageLink(page, 1);
+      }
     });
 
     // Flush pending edits when leaving the tab (phone home button / PC close).
