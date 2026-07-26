@@ -1644,6 +1644,33 @@ function openPage(id) {
   render();
 }
 
+function syncChildrenOrderFromBlocks(page) {
+  const linkedIds = page.blocks.filter(b => b.type === "page").map(b => b.pageId);
+  const linkedSet = new Set(linkedIds);
+  const byId = new Map(page.children.map(c => [c.id, c]));
+  const ordered = [];
+  for (const id of linkedIds) {
+    if (byId.has(id)) ordered.push(byId.get(id));
+  }
+  for (const c of page.children) {
+    if (!linkedSet.has(c.id)) ordered.push(c);
+  }
+  page.children = ordered;
+}
+
+function movePageLinkBlock(page, dragId, dropId) {
+  if (!dragId || dragId === dropId) return;
+  const fromIdx = page.blocks.findIndex(b => b.id === dragId);
+  const toIdx = page.blocks.findIndex(b => b.id === dropId);
+  if (fromIdx < 0 || toIdx < 0) return;
+  if (page.blocks[fromIdx].type !== "page") return;
+  record(() => {
+    const [block] = page.blocks.splice(fromIdx, 1);
+    page.blocks.splice(toIdx, 0, block);
+    syncChildrenOrderFromBlocks(page);
+  });
+}
+
 function getSelectedBlockIndex(page) {
   if (!selectedBlockId) return -1;
   return page.blocks.findIndex(b => b.id === selectedBlockId);
@@ -1655,13 +1682,26 @@ function getInsertIndex(page) {
 function setSelectedBlock(blockId) {
   selectedBlockId = blockId;
   document.querySelectorAll(".block.selected").forEach(n => n.classList.remove("selected"));
+  document.querySelectorAll(".pagelink").forEach(n => {
+    n.classList.remove("selected");
+    n.setAttribute("aria-selected", "false");
+  });
   const node = document.querySelector(`.block[data-blk="${blockId}"]`);
   if (node) node.classList.add("selected");
+  const plink = document.querySelector(`.block[data-blk="${blockId}"] .pagelink`);
+  if (plink) {
+    plink.classList.add("selected");
+    plink.setAttribute("aria-selected", "true");
+  }
   updateDocToolbar();
 }
 function clearSelectedBlock() {
   selectedBlockId = null;
   document.querySelectorAll(".block.selected").forEach(n => n.classList.remove("selected"));
+  document.querySelectorAll(".pagelink").forEach(n => {
+    n.classList.remove("selected");
+    n.setAttribute("aria-selected", "false");
+  });
   updateDocToolbar();
 }
 function updateDocToolbar() {
@@ -1672,12 +1712,23 @@ function updateDocToolbar() {
   const { page } = hit;
   const idx = getSelectedBlockIndex(page);
   const hasBlock = idx >= 0;
+  const block = hasBlock ? page.blocks[idx] : null;
+  const isPageLink = block?.type === "page";
   const up = toolbar.querySelector('[data-action="move-up"]');
   const dn = toolbar.querySelector('[data-action="move-down"]');
   const rm = toolbar.querySelector('[data-action="delete-block"]');
+  const open = toolbar.querySelector('[data-action="open-page"]');
   if (up) up.disabled = !hasBlock || idx === 0;
   if (dn) dn.disabled = !hasBlock || idx >= page.blocks.length - 1;
-  if (rm) rm.disabled = !hasBlock;
+  if (rm) {
+    rm.disabled = !hasBlock;
+    rm.textContent = isPageLink ? "Remove" : "✕";
+    rm.title = isPageLink ? "Remove shortcut (page stays in sidebar)" : "Delete block";
+  }
+  if (open) {
+    open.hidden = !isPageLink;
+    open.disabled = !isPageLink || !findPage(block?.pageId);
+  }
 }
 function moveSelectedBlock(page, dir) {
   const idx = getSelectedBlockIndex(page);
@@ -1688,11 +1739,18 @@ function moveSelectedBlock(page, dir) {
   record(() => {
     page.blocks.splice(idx, 1);
     page.blocks.splice(newIdx, 0, b);
+    if (b.type === "page") syncChildrenOrderFromBlocks(page);
   });
 }
 function deleteSelectedBlock(page) {
   const idx = getSelectedBlockIndex(page);
   if (idx < 0) return;
+  const b = page.blocks[idx];
+  if (b.type === "page") {
+    const target = findPage(b.pageId);
+    const label = target ? `${target.page.icon} ${target.page.title || "Untitled"}`.trim() : "this page";
+    if (!confirm(`Remove shortcut to ${label}? The page will stay in the sidebar.`)) return;
+  }
   record(() => {
     page.blocks.splice(idx, 1);
     selectedBlockId = null;
@@ -1966,7 +2024,15 @@ function buildDocToolbar(page, path) {
     btn.onclick = fn;
     return btn;
   };
+  const openPageBtn = act("Open", "Open page", "open-page", () => {
+    const idx = getSelectedBlockIndex(page);
+    if (idx < 0) return;
+    const b = page.blocks[idx];
+    if (b.type === "page") openPage(b.pageId);
+  });
+  openPageBtn.hidden = true;
   blockActs.append(
+    openPageBtn,
     act("↑", "Move up", "move-up", () => moveSelectedBlock(page, -1)),
     act("↓", "Move down", "move-down", () => moveSelectedBlock(page, 1)),
     act("✕", "Delete block", "delete-block", () => deleteSelectedBlock(page)),
@@ -2017,12 +2083,34 @@ function pickImageAt(page, index, historyPushed = false) {
 
 /* ---------- block rendering ---------- */
 function renderBlock(page, b, idx) {
-  const row = el("div", "blockrow");
+  const isPageLink = b.type === "page";
+  const row = el("div", "blockrow" + (isPageLink ? " pagelink-row" : ""));
   const wrap = el("div", "block");
   wrap.dataset.blk = b.id;
   if (selectedBlockId === b.id) wrap.classList.add("selected");
+
+  if (isPageLink) {
+    const grab = el("span", "grab", "⠿");
+    grab.title = "Drag to reorder";
+    row.draggable = true;
+    row.ondragstart = e => { row.classList.add("dragging"); e.dataTransfer.setData("text/plain", b.id); };
+    row.ondragend = () => row.classList.remove("dragging");
+    row.prepend(grab);
+  }
+
+  row.ondragover = e => { e.preventDefault(); row.classList.add("dropover"); };
+  row.ondragleave = () => row.classList.remove("dropover");
+  row.ondrop = e => {
+    e.preventDefault();
+    row.classList.remove("dropover");
+    const dragId = e.dataTransfer.getData("text/plain");
+    if (!dragId || dragId === b.id) return;
+    movePageLinkBlock(page, dragId, b.id);
+  };
+
   wrap.onclick = e => {
-    if (e.target.closest("button, input, .textblock, .tasktext, .tbl input, .pagelink")) return;
+    if (e.target.closest("button, input, .textblock, .tasktext, .tbl input")) return;
+    if (e.target.closest(".pagelink")) return;
     setSelectedBlock(b.id);
   };
 
@@ -2037,11 +2125,15 @@ function renderBlock(page, b, idx) {
 
 function renderPageLink(b) {
   const row = autoDir(el("button", "pagelink"));
+  const selected = selectedBlockId === b.id;
+  row.setAttribute("aria-selected", selected ? "true" : "false");
+  if (selected) row.classList.add("selected");
   const hit = findPage(b.pageId);
   if (!hit) {
     row.classList.add("missing");
     row.append(el("span", "pagelink-icon", "📄"), autoDir(el("span", "pagelink-label", "Missing page")));
     row.disabled = true;
+    row.onclick = e => { e.stopPropagation(); setSelectedBlock(b.id); };
     return row;
   }
   const { page: target } = hit;
@@ -2049,7 +2141,8 @@ function renderPageLink(b) {
     el("span", "pagelink-icon", target.icon),
     autoDir(el("span", "pagelink-label", target.title)),
   );
-  row.onclick = () => openPage(b.pageId);
+  row.onclick = e => { e.stopPropagation(); setSelectedBlock(b.id); };
+  row.ondblclick = e => { e.stopPropagation(); openPage(b.pageId); };
   return row;
 }
 
@@ -3240,9 +3333,24 @@ function toggleSidebar() {
     on("brand", () => { view = "map"; mapZoomAuto = true; mapScopeId = null; render(); });
 
     document.addEventListener("keydown", e => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-      else if (e.key === "y" || (e.key === "z" && e.shiftKey) || (e.key === "Z" && e.shiftKey)) { e.preventDefault(); redo(); }
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+        else if (e.key === "y" || (e.key === "z" && e.shiftKey) || (e.key === "Z" && e.shiftKey)) { e.preventDefault(); redo(); }
+        return;
+      }
+      if (view !== "page" || !selectedBlockId) return;
+      if (e.target.closest("input, textarea, [contenteditable=true]")) return;
+      const hit = findPage(currentPageId);
+      if (!hit) return;
+      const { page } = hit;
+      const idx = getSelectedBlockIndex(page);
+      if (idx < 0) return;
+      const block = page.blocks[idx];
+      if (block.type !== "page") return;
+      if (e.key === "Enter") { e.preventDefault(); openPage(block.pageId); }
+      else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelectedBlock(page); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); moveSelectedBlock(page, -1); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); moveSelectedBlock(page, 1); }
     });
 
     // Flush pending edits when leaving the tab (phone home button / PC close).
