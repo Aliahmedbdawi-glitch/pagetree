@@ -115,6 +115,27 @@ input, textarea { font: inherit; color: inherit; }
 .bigicon:hover { background: var(--accent-soft); }
 .titleinput { width: 100%; font-size: 2.5rem; font-weight: 700; border: none; background: none; outline: none; padding: 2px 0; min-width: 0; line-height: 1.2; }
 
+/* ---------- daughters (sub-pages) at top of every page ---------- */
+.daughters {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: var(--radius);
+}
+.daughters-label {
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+}
+.daughters-list { display: flex; flex-direction: column; gap: 2px; }
+.daughters-list .blockrow.pagelink-row { margin: 0; }
+.daughters-list .pagelink { padding: 4px 2px; }
+.daughters:has(:dir(rtl)) .daughters-label { text-align: right; }
+
 /* ---------- page shortcut selection bar ---------- */
 .plink-toolbar {
   display: flex;

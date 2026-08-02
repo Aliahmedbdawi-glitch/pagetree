@@ -1269,10 +1269,44 @@ function addSubPage(parent, { title, afterBlockIndex, atIndex, noSave } = {}) {
     parent.blocks.splice(atIndex, 0, block);
   else if (afterBlockIndex != null && afterBlockIndex >= 0)
     parent.blocks.splice(afterBlockIndex + 1, 0, block);
-  else
-    parent.blocks.push(block);
+  else {
+    // New daughters land with the other page links (pinned to the top).
+    const firstNonPage = parent.blocks.findIndex(b => b.type !== "page");
+    if (firstNonPage < 0) parent.blocks.push(block);
+    else parent.blocks.splice(firstNonPage, 0, block);
+  }
+  pinDaughtersToTop(parent);
   if (!noSave) save();
   return child;
+}
+
+/** Keep daughter shortcuts pinned at the top of the page (does not recreate removed links). */
+function pinDaughtersToTop(page) {
+  if (!page || !Array.isArray(page.blocks) || !Array.isArray(page.children)) return false;
+  const byPageId = new Map();
+  const others = [];
+  for (const b of page.blocks) {
+    if (b.type === "page") {
+      if (!byPageId.has(b.pageId)) byPageId.set(b.pageId, b);
+    } else {
+      others.push(b);
+    }
+  }
+  const pageBlocks = [];
+  for (const c of page.children) {
+    const blk = byPageId.get(c.id);
+    if (blk) {
+      pageBlocks.push(blk);
+      byPageId.delete(c.id);
+    }
+  }
+  for (const blk of byPageId.values()) pageBlocks.push(blk);
+  const next = pageBlocks.concat(others);
+  const same = next.length === page.blocks.length &&
+    next.every((b, i) => b.id === page.blocks[i].id);
+  if (same) return false;
+  page.blocks = next;
+  return true;
 }
 
 /* ---------- collect all tasks ---------- */
@@ -1713,23 +1747,27 @@ function updatePageLinkToolbar() {
 function canMovePageLink(page, dir) {
   if (pageLinkSelectedIds.size !== 1) return false;
   const blockId = [...pageLinkSelectedIds][0];
-  const idx = page.blocks.findIndex(b => b.id === blockId);
+  const links = page.blocks.filter(b => b.type === "page");
+  const idx = links.findIndex(b => b.id === blockId);
   if (idx < 0) return false;
   const newIdx = idx + dir;
-  return newIdx >= 0 && newIdx < page.blocks.length;
+  return newIdx >= 0 && newIdx < links.length;
 }
 
 function moveSelectedPageLink(page, dir) {
   if (pageLinkSelectedIds.size !== 1) return;
   const blockId = [...pageLinkSelectedIds][0];
-  const idx = page.blocks.findIndex(b => b.id === blockId);
-  if (idx < 0 || page.blocks[idx].type !== "page") return;
+  const links = page.blocks.filter(b => b.type === "page");
+  const idx = links.findIndex(b => b.id === blockId);
+  if (idx < 0) return;
   const newIdx = idx + dir;
-  if (newIdx < 0 || newIdx >= page.blocks.length) return;
-  const b = page.blocks[idx];
+  if (newIdx < 0 || newIdx >= links.length) return;
   record(() => {
-    page.blocks.splice(idx, 1);
-    page.blocks.splice(newIdx, 0, b);
+    const others = page.blocks.filter(b => b.type !== "page");
+    const ordered = page.blocks.filter(b => b.type === "page");
+    const [b] = ordered.splice(idx, 1);
+    ordered.splice(newIdx, 0, b);
+    page.blocks = ordered.concat(others);
     syncChildrenOrderFromBlocks(page);
   });
 }
@@ -1834,13 +1872,16 @@ function syncChildrenOrderFromBlocks(page) {
 
 function movePageLinkBlock(page, dragId, dropId) {
   if (!dragId || dragId === dropId) return;
-  const fromIdx = page.blocks.findIndex(b => b.id === dragId);
-  const toIdx = page.blocks.findIndex(b => b.id === dropId);
+  const links = page.blocks.filter(b => b.type === "page");
+  const fromIdx = links.findIndex(b => b.id === dragId);
+  const toIdx = links.findIndex(b => b.id === dropId);
   if (fromIdx < 0 || toIdx < 0) return;
-  if (page.blocks[fromIdx].type !== "page") return;
   record(() => {
-    const [block] = page.blocks.splice(fromIdx, 1);
-    page.blocks.splice(toIdx, 0, block);
+    const others = page.blocks.filter(b => b.type !== "page");
+    const ordered = page.blocks.filter(b => b.type === "page");
+    const [block] = ordered.splice(fromIdx, 1);
+    ordered.splice(toIdx, 0, block);
+    page.blocks = ordered.concat(others);
     syncChildrenOrderFromBlocks(page);
   });
 }
@@ -1905,9 +1946,12 @@ function renderPage(main) {
   if (!hit) { renderEmpty(main); return; }
   const { page, path } = hit;
 
+  // Daughters (sub-pages) always appear as shortcuts at the top.
+  if (pinDaughtersToTop(page)) save();
+
   // Empty pages get a text block so you can type immediately.
   let focusStarter = null;
-  if (page.blocks.length === 0) {
+  if (page.blocks.every(b => b.type === "page")) {
     focusStarter = { id: uid(), type: "text", html: "" };
     page.blocks.push(focusStarter);
     save();
@@ -1941,11 +1985,68 @@ function renderPage(main) {
   title.oninput = () => { page.title = title.value; save(); renderTree(); };
   head.append(icon, title);
   doc.append(head);
+
+  // Daughters strip — always above body content (from page.children)
+  if (page.children.length) {
+    const daughters = el("div", "daughters");
+    const label = el("div", "daughters-label", "Sub-pages");
+    daughters.append(label);
+    const list = el("div", "daughters-list" + (pageLinkSelectMode ? " selecting" : ""));
+    const linkByPageId = new Map(
+      page.blocks.filter(b => b.type === "page").map(b => [b.pageId, b])
+    );
+    page.children.forEach(child => {
+      const b = linkByPageId.get(child.id);
+      if (b) {
+        const idx = page.blocks.findIndex(x => x.id === b.id);
+        list.append(renderBlock(page, b, idx));
+        linkByPageId.delete(child.id);
+      } else {
+        // Child with no shortcut block — still show at the top
+        const row = el("div", "blockrow pagelink-row");
+        const wrap = el("div", "block");
+        const btn = autoDir(el("button", "pagelink"));
+        btn.onclick = () => openPage(child.id);
+        btn.append(
+          el("span", "pagelink-icon", child.icon),
+          autoDir(el("span", "pagelink-label", child.title || "Untitled")),
+        );
+        wrap.append(btn);
+        row.append(wrap);
+        list.append(row);
+      }
+    });
+    // Orphan page-link blocks (missing child) still listed
+    for (const b of linkByPageId.values()) {
+      const idx = page.blocks.findIndex(x => x.id === b.id);
+      list.append(renderBlock(page, b, idx));
+    }
+    daughters.append(list);
+    doc.append(daughters);
+  } else {
+    // Orphan page links only
+    const orphans = page.blocks.filter(b => b.type === "page");
+    if (orphans.length) {
+      const daughters = el("div", "daughters");
+      daughters.append(el("div", "daughters-label", "Sub-pages"));
+      const list = el("div", "daughters-list" + (pageLinkSelectMode ? " selecting" : ""));
+      orphans.forEach(b => {
+        const idx = page.blocks.findIndex(x => x.id === b.id);
+        list.append(renderBlock(page, b, idx));
+      });
+      daughters.append(list);
+      doc.append(daughters);
+    }
+  }
+
   doc.append(buildPageLinkToolbar(page));
   doc.append(buildDocToolbar(page, path));
 
-  const flow = el("div", "blocksflow" + (pageLinkSelectMode ? " selecting" : ""));
-  page.blocks.forEach((b, i) => flow.append(renderBlock(page, b, i)));
+  const flow = el("div", "blocksflow");
+  page.blocks.forEach((b, i) => {
+    if (b.type === "page") return; // shown in daughters strip above
+    flow.append(renderBlock(page, b, i));
+  });
   doc.append(flow);
 
   main.append(doc);
